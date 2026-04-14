@@ -3,5 +3,6 @@ uvicorn
 websockets
 google-genai
 google-adk
+google-auth
 pydantic
 python-dotenv

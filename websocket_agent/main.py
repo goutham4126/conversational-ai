@@ -8,6 +8,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from google import genai
 from google.genai import types
+from google.oauth2 import service_account
 from dotenv import load_dotenv
 import sqlite3
 import time
@@ -53,9 +54,18 @@ def log_event(color, icon, message):
     timestamp = time.strftime("%H:%M:%S")
     print(f"[{timestamp}] {color}{icon} {message}{Colors.END}")
 
-# GCS Configuration
+# GCS & Credentials Configuration
 GCS_BUCKET_NAME = "conversational-ai-recordings"
 SERVICE_ACCOUNT_PATH = "/Users/goutham/Desktop/demo/xenon-lantern-490215-q3-ef0724aea8d0.json"
+
+# Set environment variable for any libraries that use ADC
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = SERVICE_ACCOUNT_PATH
+
+# Load credentials once for reuse
+credentials = service_account.Credentials.from_service_account_file(
+    SERVICE_ACCOUNT_PATH,
+    scopes=['https://www.googleapis.com/auth/cloud-platform']
+)
 
 gcs_client = None
 gcs_bucket = None
@@ -66,7 +76,7 @@ def get_gcs_bucket():
     if gcs_bucket:
         return gcs_bucket
     try:
-        gcs_client = storage.Client.from_service_account_json(SERVICE_ACCOUNT_PATH)
+        gcs_client = storage.Client(credentials=credentials, project=credentials.project_id)
         gcs_bucket = gcs_client.bucket(GCS_BUCKET_NAME)
         log_event(Colors.GREEN, "☁️", f"GCS Client Lazy-Initialized (Bucket: {GCS_BUCKET_NAME})")
         return gcs_bucket
@@ -119,8 +129,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Vertex AI Configuration
 client = genai.Client(
     vertexai=True,
-    project=os.environ.get("GOOGLE_CLOUD_PROJECT", "xenon-lantern-490215-q3"),
-    location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+    project=credentials.project_id,
+    location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
+    credentials=credentials
 )
 
 MODEL_NAME = "gemini-live-2.5-flash-native-audio"
