@@ -262,6 +262,33 @@ async def sync_session(session_id: str):
 async def delete_session(session_id: str):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    
+    # 1. Fetch created_at to reconstruct GCS prefix for cleanup
+    c.execute("SELECT created_at FROM sessions WHERE id = ?", (session_id,))
+    res = c.fetchone()
+    
+    if res:
+        created_at_str = res[0]
+        try:
+            # Reconstruct the GCS path used in upload: date_str/session_id/
+            date_str = datetime.fromisoformat(created_at_str).strftime("%Y-%m-%d")
+            # Using the prefix without the trailing slash to catch the "folder" object itself
+            prefix = f"{date_str}/{session_id}"
+            
+            bucket = get_gcs_bucket()
+            if bucket:
+                # Use the prefix to find all items including the folder placeholder
+                blobs = list(bucket.list_blobs(prefix=prefix))
+                if blobs:
+                    log_event(Colors.YELLOW, "🗑️", f"Deleting {len(blobs)} items (including folder) from GCS for session {session_id}")
+                    bucket.delete_blobs(blobs)
+                    log_event(Colors.GREEN, "✅", f"Successfully cleaned up all GCS data for {session_id}")
+                else:
+                    log_event(Colors.CYAN, "ℹ️", f"No GCS data found for session {session_id} using prefix {prefix}")
+        except Exception as e:
+            log_event(Colors.RED, "❌", f"GCS Cleanup Error: {e}")
+
+    # 2. Proceed with database deletion
     c.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
     c.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
     conn.commit()

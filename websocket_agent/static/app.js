@@ -33,7 +33,7 @@ let activeButton = null;
 // Initialize Visualizer Bars
 function initVisualizer() {
     visualizer.innerHTML = '';
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 24; i++) {
         const bar = document.createElement('div');
         bar.className = 'bar';
         visualizer.appendChild(bar);
@@ -50,11 +50,14 @@ function updateVisualizer(active) {
     }
 
     visualizerInterval = setInterval(() => {
-        bars.forEach(bar => {
-            const height = Math.random() * 30 + 4;
+        const center = bars.length / 2;
+        bars.forEach((bar, index) => {
+            const distance = Math.abs(center - index);
+            const factor = 1 - (distance / center);
+            const height = Math.random() * (32 * factor) + 4;
             bar.style.height = `${height}px`;
         });
-    }, 100);
+    }, 80);
 }
 
 function appendMessage(sender, text, isHistory = false, audioPath = null) {
@@ -82,13 +85,22 @@ function appendMessage(sender, text, isHistory = false, audioPath = null) {
 
         if (audioPath) {
             const audioActionContainer = document.createElement('div');
-            audioActionContainer.className = 'audio-action-container';
+            audioActionContainer.className = 'audio-player-pill';
 
             const playBtn = document.createElement('button');
             playBtn.className = 'audio-play-btn';
             playBtn.innerHTML = icons.play;
             playBtn.onclick = () => playAudio(playBtn, audioPath);
             
+            const waveforms = document.createElement('div');
+            waveforms.className = 'audio-waveforms';
+            for (let i = 0; i < 20; i++) {
+                const waveform = document.createElement('div');
+                waveform.className = 'waveform-bar';
+                if (Math.random() > 0.5) waveform.style.height = `${Math.random() * 8 + 4}px`;
+                waveforms.appendChild(waveform);
+            }
+
             const durationLabel = document.createElement('span');
             durationLabel.className = 'audio-duration';
             durationLabel.innerText = '...';
@@ -101,6 +113,7 @@ function appendMessage(sender, text, isHistory = false, audioPath = null) {
             };
 
             audioActionContainer.appendChild(playBtn);
+            audioActionContainer.appendChild(waveforms);
             audioActionContainer.appendChild(durationLabel);
             wrapper.appendChild(audioActionContainer);
         }
@@ -203,7 +216,7 @@ async function selectSession(id) {
         if (messages.length === 0) {
             transcriptArea.innerHTML = `
                 <div class="welcome-screen">
-                    <div class="welcome-icon">🎙️</div>
+                    <div class="welcome-orb"></div>
                     <h2>No messages yet</h2>
                     <p>Start a call to begin talking in this session.</p>
                 </div>`;
@@ -267,9 +280,14 @@ newChatBtn.onclick = () => {
     if (syncBtn) syncBtn.style.display = 'none';
     transcriptArea.innerHTML = `
         <div class="welcome-screen">
-            <div class="welcome-icon">🎙️</div>
-            <h2>New Session</h2>
-            <p>Ready for a fresh start. Start a call when you're ready.</p>
+            <div class="welcome-orb"></div>
+            <h2>Gemini Live</h2>
+            <p>Click start to begin a real-time voice conversation</p>
+            <div class="feature-pills">
+                <div class="feature-pill">🎙️ Real-time Audio</div>
+                <div class="feature-pill">📝 Auto Transcription</div>
+                <div class="feature-pill">☁️ Cloud Backup</div>
+            </div>
         </div>`;
     fetchSessions();
 };
