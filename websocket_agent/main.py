@@ -57,18 +57,35 @@ def log_event(color, icon, message):
 GCS_BUCKET_NAME = "conversational-ai-recordings"
 SERVICE_ACCOUNT_PATH = "/Users/goutham/Desktop/demo/xenon-lantern-490215-q3-ef0724aea8d0.json"
 
-try:
-    gcs_client = storage.Client.from_service_account_json(SERVICE_ACCOUNT_PATH)
-    gcs_bucket = gcs_client.get_bucket(GCS_BUCKET_NAME)
-    log_event(Colors.GREEN, "☁️", f"GCS Client initialized (Bucket: {GCS_BUCKET_NAME})")
-except Exception as e:
-    log_event(Colors.RED, "❌", f"GCS Init Error: {e}")
-    gcs_client = None
-    gcs_bucket = None
+gcs_client = None
+gcs_bucket = None
+
+def get_gcs_bucket():
+    """Lazy-initialize and return the GCS bucket."""
+    global gcs_bucket, gcs_client
+    if gcs_bucket:
+        return gcs_bucket
+    try:
+        gcs_client = storage.Client.from_service_account_json(SERVICE_ACCOUNT_PATH)
+        gcs_bucket = gcs_client.bucket(GCS_BUCKET_NAME)
+        log_event(Colors.GREEN, "☁️", f"GCS Client Lazy-Initialized (Bucket: {GCS_BUCKET_NAME})")
+        return gcs_bucket
+    except Exception as e:
+        log_event(Colors.RED, "❌", f"GCS Lazy-Init Error: {e}")
+        return None
+
+# Initial startup attempt
+get_gcs_bucket()
 
 def get_signed_url(blob_path: str):
     """Generate a temporary signed URL for a private GCS blob."""
-    if not gcs_bucket or not blob_path.startswith("gcs://"):
+    bucket = get_gcs_bucket()
+    if not bucket or not blob_path:
+        return blob_path
+    
+    # Strip leading slash if present (e.g. /gcs:// -> gcs://)
+    clean_path = blob_path.lstrip('/')
+    if not clean_path.startswith("gcs://"):
         return blob_path
     
     try:
@@ -167,7 +184,7 @@ async def get_sessions():
 async def get_messages(session_id: str):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT sender, text, created_at, audio_path FROM messages WHERE session_id = ? AND text IS NOT NULL ORDER BY id ASC", (session_id,))
+    c.execute("SELECT sender, text, created_at, audio_path FROM messages WHERE session_id = ? AND text IS NOT NULL ORDER BY created_at ASC", (session_id,))
     rows = c.fetchall()
     conn.close()
     
@@ -184,6 +201,51 @@ async def get_messages(session_id: str):
             "audio_path": audio_path
         })
     return messages
+
+@app.post("/api/sessions/{session_id}/sync")
+async def sync_session(session_id: str):
+    """Scan GCS for this session and restore any missing records in the DB."""
+    if not gcs_bucket:
+        return {"error": "GCS not initialized"}
+    
+    try:
+        # 1. Get session date from DB
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT created_at FROM sessions WHERE id = ?", (session_id,))
+        res = c.fetchone()
+        if not res:
+            return {"error": "Session not found"}
+        
+        # Format: 2026-04-14T...
+        date_str = datetime.fromisoformat(res[0]).strftime("%Y-%m-%d")
+        
+        # 2. List GCS blobs for this session
+        prefix = f"{date_str}/{session_id}/"
+        blobs = list(gcs_bucket.list_blobs(prefix=prefix))
+        log_event(Colors.CYAN, "🔍", f"Syncing {session_id}: Found {len(blobs)} blobs in GCS")
+        
+        synced_count = 0
+        for blob in blobs:
+            if not blob.name.endswith(".wav"): continue
+            
+            # Check if exists in DB
+            gcs_path = f"gcs://{GCS_BUCKET_NAME}/{blob.name}"
+            c.execute("SELECT id FROM messages WHERE audio_path = ?", (gcs_path,))
+            if not c.fetchone():
+                # Reconstruct record
+                sender = "Assistant" if "assistant" in blob.name.lower() else "User"
+                created_at = blob.time_created or datetime.now()
+                c.execute("INSERT INTO messages (session_id, sender, text, created_at, audio_path) VALUES (?, ?, ?, ?, ?)",
+                          (session_id, sender, "[Discovered from Cloud]", created_at.isoformat(), gcs_path))
+                synced_count += 1
+        
+        conn.commit()
+        conn.close()
+        return {"status": "success", "synced": synced_count}
+    except Exception as e:
+        log_event(Colors.RED, "❌", f"Sync Error: {e}")
+        return {"error": str(e)}
 
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str):
@@ -291,18 +353,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                 first_agent_word_received = False
                 latencies = []
 
-                def save_wav(pcm_data, filename, sample_rate):
-                    try:
-                        os.makedirs(os.path.dirname(filename), exist_ok=True)
-                        with wave.open(filename, 'wb') as wav_file:
-                            wav_file.setnchannels(1)
-                            wav_file.setsampwidth(2) # 16-bit
-                            wav_file.setframerate(sample_rate)
-                            wav_file.writeframes(pcm_data)
-                        return filename
-                    except Exception as e:
-                        log_event(Colors.RED, "❌", f"WAV Save Error: {e}")
-                        return None
 
                 def flush_buffer(sender, text):
                     nonlocal user_audio_turn_buffer, assistant_audio_turn_buffer
@@ -366,8 +416,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                     try:
                         conn = sqlite3.connect(DB_PATH)
                         c = conn.cursor()
-                        # Use a common prefix for static files in the DB so the frontend can find them
-                        db_audio_path = f"/{audio_path}" if audio_path else None
+                        # Only add leading slash for local paths, not GCS
+                        db_audio_path = audio_path if audio_path else None
                         c.execute("INSERT INTO messages (session_id, sender, text, created_at, audio_path) VALUES (?, ?, ?, ?, ?)",
                                   (session_id, sender, text.strip(), datetime.now().isoformat(), db_audio_path))
                         conn.commit()
@@ -484,3 +534,33 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
         
         try: await websocket.close()
         except: pass
+
+@app.get("/api/debug/gcs")
+async def debug_gcs():
+    bucket = get_gcs_bucket()
+    return {
+        "bucket_initialized": bucket is not None,
+        "bucket_name": GCS_BUCKET_NAME,
+        "service_account_path": SERVICE_ACCOUNT_PATH,
+        "service_account_exists": os.path.exists(SERVICE_ACCOUNT_PATH)
+    }
+
+@app.get("/api/debug/sign")
+async def debug_sign():
+    bucket = get_gcs_bucket()
+    if not bucket:
+        return {"error": "GCS not initialized"}
+    try:
+        blob = bucket.blob("test.wav")
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(minutes=5),
+            method="GET",
+        )
+        return {"success": True, "url": url}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

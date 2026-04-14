@@ -481,6 +481,46 @@ body {
   border: 1px solid rgba(99, 91, 255, 0.1);
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.sync-action-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border-color);
+  background: white;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.sync-action-btn:hover {
+  background: #f8fafc;
+  color: var(--accent-color);
+  border-color: var(--accent-color);
+  transform: translateY(-1px);
+}
+
+.sync-action-btn.syncing {
+  animation: spin 1s linear infinite;
+  pointer-events: none;
+  color: var(--accent-color);
+  background: #f0f7ff;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 .metric-item {
   display: flex;
   flex-direction: column;

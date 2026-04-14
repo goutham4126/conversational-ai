@@ -20,6 +20,7 @@ const newChatBtn = document.getElementById('newChatBtn');
 const latencyInfo = document.getElementById('latencyInfo');
 const currentLatency = document.getElementById('currentLatency');
 const avgLatency = document.getElementById('avgLatency');
+const syncBtn = document.getElementById('syncBtn');
 
 let currentSender = null;
 let currentMessageContentDiv = null;
@@ -118,7 +119,7 @@ function renderSessions(sessions) {
         const item = document.createElement('div');
         item.className = `session-item ${currentSessionId === session.id ? 'active' : ''}`;
         item.onclick = () => selectSession(session.id);
-        
+
         const date = new Date(session.created_at).toLocaleDateString(undefined, {
             month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
         });
@@ -165,20 +166,23 @@ async function selectSession(id) {
     if (ws) {
         ws.close();
     }
-    
+
     currentSessionId = id;
     fetchSessions(); // Refresh list to show active state
-    
+
+    // Show sync button for historical session
+    if (syncBtn) syncBtn.style.display = 'flex';
+
     transcriptArea.innerHTML = '<div class="session-skeleton"></div><div class="session-skeleton"></div>';
-    
+
     try {
         const response = await fetch(`/api/sessions/${id}/messages`);
         const messages = await response.json();
-        
+
         transcriptArea.innerHTML = ''; // Clear skeleton
         currentSender = null;
         currentMessageContentDiv = null;
-        
+
         if (messages.length === 0) {
             transcriptArea.innerHTML = `
                 <div class="welcome-screen">
@@ -225,7 +229,7 @@ function playAudio(btn, url) {
     // Start new audio
     activeAudio = new Audio(url);
     activeButton = btn;
-    
+
     activeAudio.play();
     btn.innerHTML = icons.pause;
     btn.classList.add('playing');
@@ -243,6 +247,7 @@ newChatBtn.onclick = () => {
     currentSessionId = null;
     currentSender = null;
     currentMessageContentDiv = null;
+    if (syncBtn) syncBtn.style.display = 'none';
     transcriptArea.innerHTML = `
         <div class="welcome-screen">
             <div class="welcome-icon">🎙️</div>
@@ -255,16 +260,16 @@ newChatBtn.onclick = () => {
 // Optimized 16-bit PCM to Float32 conversion for 24kHz stream
 function processAudioChunk(arrayBuffer) {
     if (!playbackProcessorNode) return;
-    
+
     const view = new DataView(arrayBuffer);
     const numSamples = arrayBuffer.byteLength / 2;
     const float32Data = new Float32Array(numSamples);
-    
+
     for (let i = 0; i < numSamples; i++) {
         const val = view.getInt16(i * 2, true);
         float32Data[i] = val / 32768.0;
     }
-    
+
     playbackProcessorNode.port.postMessage({
         type: 'samples',
         samples: float32Data
@@ -288,20 +293,20 @@ function connectWebSocket() {
     const url = currentSessionId ? `ws://${location.host}/ws/${currentSessionId}` : `ws://${location.host}/ws`;
     ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
-    
-    ws.onopen = () => { 
+
+    ws.onopen = () => {
         connStatus.classList.add('connected');
         connText.innerText = 'Live';
-        startRecording(); 
+        startRecording();
     };
-    
-    ws.onclose = () => { 
+
+    ws.onclose = () => {
         connStatus.classList.remove('connected');
         connText.innerText = 'Disconnected';
-        stopRecording(); 
+        stopRecording();
         fetchSessions(); // Refresh sessions to show the new one if it was created
     };
-    
+
     ws.onmessage = async (event) => {
         if (typeof event.data === 'string') {
             const data = JSON.parse(event.data);
@@ -320,7 +325,6 @@ function connectWebSocket() {
     };
 }
 
-// Rest of the functions (startRecording, stopRecording, micBtn.onclick) stay the same or similar
 async function startRecording() {
     if (!outputContext) {
         outputContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
@@ -332,22 +336,22 @@ async function startRecording() {
         inputContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
         await inputContext.audioWorklet.addModule('/static/pcm-processor.js');
     }
-    
+
     if (outputContext.state === 'suspended') await outputContext.resume();
     if (inputContext.state === 'suspended') await inputContext.resume();
-    
+
     try {
         mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const source = inputContext.createMediaStreamSource(mediaStream);
-        
+
         inputProcessorNode = new AudioWorkletNode(inputContext, 'pcm-processor');
         inputProcessorNode.port.onmessage = (e) => {
             if (ws && ws.readyState === WebSocket.OPEN) ws.send(e.data.buffer);
         };
-        
+
         source.connect(inputProcessorNode);
         inputProcessorNode.connect(inputContext.destination);
-        
+
         micBtn.classList.add('active');
         statusText.innerText = 'End Call';
         updateVisualizer(true);
@@ -356,13 +360,13 @@ async function startRecording() {
 
 function stopRecording() {
     flushPlayback();
-    
+
     if (inputProcessorNode) { inputProcessorNode.disconnect(); inputProcessorNode = null; }
     if (mediaStream) { mediaStream.getTracks().forEach(track => track.stop()); mediaStream = null; }
-    
+
     if (inputContext) inputContext.suspend();
     if (outputContext) outputContext.suspend();
-    
+
     micBtn.classList.remove('active');
     statusText.innerText = 'Start Support Call';
     if (latencyInfo) latencyInfo.style.display = 'none';
@@ -383,6 +387,25 @@ micBtn.onclick = () => {
         startRecording();
     }
 };
+
+async function syncFromCloud() {
+    if (!currentSessionId || !syncBtn) return;
+    
+    syncBtn.classList.add('syncing');
+    try {
+        const response = await fetch(`/api/sessions/${currentSessionId}/sync`, { method: 'POST' });
+        const result = await response.json();
+        if (result.status === 'success') {
+            await selectSession(currentSessionId); // Reload
+        }
+    } catch (err) {
+        console.error('Sync failed:', err);
+    } finally {
+        syncBtn.classList.remove('syncing');
+    }
+}
+
+if (syncBtn) syncBtn.onclick = syncFromCloud;
 
 // Initial load
 fetchSessions();
