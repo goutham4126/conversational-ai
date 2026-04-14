@@ -194,6 +194,23 @@ body {
   100% { background-position: -200% 0; }
 }
 
+.audio-action-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(99, 91, 255, 0.03);
+  padding: 4px 10px 4px 4px;
+  border-radius: 20px;
+  border: 1px solid rgba(99, 91, 255, 0.08);
+}
+
+.audio-duration {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 600;
+  font-family: 'Berkeley Mono', monospace;
+}
+
 .audio-play-btn {
   display: inline-flex;
   align-items: center;

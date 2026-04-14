@@ -262,7 +262,7 @@ async def delete_session(session_id: str):
 async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = None):
     await websocket.accept()
     
-    os.makedirs("static/recordings", exist_ok=True)
+    # os.makedirs("static/recordings", exist_ok=True)
     
     if not session_id:
         session_id = f"sess_{int(time.time())}"

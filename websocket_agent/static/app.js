@@ -81,11 +81,28 @@ function appendMessage(sender, text, isHistory = false, audioPath = null) {
         wrapper.appendChild(currentMessageContentDiv);
 
         if (audioPath) {
+            const audioActionContainer = document.createElement('div');
+            audioActionContainer.className = 'audio-action-container';
+
             const playBtn = document.createElement('button');
             playBtn.className = 'audio-play-btn';
             playBtn.innerHTML = icons.play;
             playBtn.onclick = () => playAudio(playBtn, audioPath);
-            wrapper.appendChild(playBtn);
+            
+            const durationLabel = document.createElement('span');
+            durationLabel.className = 'audio-duration';
+            durationLabel.innerText = '...';
+            
+            // Fetch duration
+            const tempAudio = new Audio(audioPath);
+            tempAudio.onloadedmetadata = () => {
+                const secs = Math.round(tempAudio.duration);
+                durationLabel.innerText = `${secs}s`;
+            };
+
+            audioActionContainer.appendChild(playBtn);
+            audioActionContainer.appendChild(durationLabel);
+            wrapper.appendChild(audioActionContainer);
         }
 
         transcriptArea.appendChild(wrapper);
