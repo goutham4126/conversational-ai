@@ -546,14 +546,18 @@ function showSummaryCard({ loading = false, summary = null } = {}) {
             <button class="summary-close-btn" onclick="hideSummaryCard()" title="Dismiss">✕</button>
         </div>
         <div class="summary-body">
-            <div class="summary-section">
-                <div class="summary-section-label">Summary</div>
-                <p class="summary-text">${summary.summary || ''}</p>
-            </div>
+            ${summary.language ? `<div class="summary-section">
+                <div class="summary-section-label">Language</div>
+                <p class="summary-text">${summary.language}</p>
+            </div>` : ''}
             ${summary.customer_intent ? `<div class="summary-section">
                 <div class="summary-section-label">Customer Intent</div>
                 <p class="summary-text">${summary.customer_intent}</p>
             </div>` : ''}
+            <div class="summary-section">
+                <div class="summary-section-label">Summary</div>
+                <p class="summary-text">${summary.summary || ''}</p>
+            </div>
             ${summary.resolution ? `<div class="summary-section">
                 <div class="summary-section-label">Resolution</div>
                 <p class="summary-text">${summary.resolution}</p>

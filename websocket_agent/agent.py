@@ -18,6 +18,7 @@ summary_agent = Agent(
 
   {
     "title": "A short 5-8 word title for this call",
+    "language": "The primary language(s) used in the call (e.g., English, Hindi, Tamil, etc.)",
     "customer_intent": "What the customer was calling about (1-2 sentences)",
     "key_topics": ["topic1", "topic2", "topic3"],
     "resolution": "How the call was resolved or what next steps were agreed upon (1-2 sentences)",

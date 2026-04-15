@@ -475,7 +475,7 @@ async def generate_summary(session_id: str):
 
     except json.JSONDecodeError as e:
         log_event(Colors.YELLOW, "⚠️", f"Summary JSON parse failed: {e}. Raw: {response_text[:200]}")
-        fallback = {"title": "Call Summary", "summary": response_text, "sentiment": "neutral", "key_topics": [], "action_items": [], "customer_intent": "", "resolution": "", "call_quality": "normal"}
+        fallback = {"title": "Call Summary", "language": "N/A", "summary": response_text, "sentiment": "neutral", "key_topics": [], "action_items": [], "customer_intent": "", "resolution": "", "call_quality": "normal"}
         return {"status": "success", "summary": fallback, "session_id": session_id}
     except Exception as e:
         log_event(Colors.RED, "❌", f"Summary generation error: {e}")
