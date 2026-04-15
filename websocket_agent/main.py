@@ -160,8 +160,14 @@ CONFIG = types.LiveConnectConfig(
             silence_duration_ms=1000,   # ms of silence before turn is considered done
         )
     ),
-    input_audio_transcription=types.AudioTranscriptionConfig(language_codes=["en-US"]),
-    output_audio_transcription=types.AudioTranscriptionConfig(),
+    input_audio_transcription=types.AudioTranscriptionConfig(language_codes=[
+        "en-US", "en-IN", "hi-IN", "ta-IN", "te-IN", "kn-IN", "ml-IN", "mr-IN", "gu-IN", "bn-IN", "pa-IN",
+        "es-ES", "es-US", "fr-FR", "de-DE", "it-IT", "pt-BR", "zh-CN", "ja-JP", "ko-KR", "ar-SA", "ru-RU"
+    ]),
+    output_audio_transcription=types.AudioTranscriptionConfig(language_codes=[
+        "en-US", "en-IN", "hi-IN", "ta-IN", "te-IN", "kn-IN", "ml-IN", "mr-IN", "gu-IN", "bn-IN", "pa-IN",
+        "es-ES", "es-US", "fr-FR", "de-DE", "it-IT", "pt-BR", "zh-CN", "ja-JP", "ko-KR", "ar-SA", "ru-RU"
+    ]),
     system_instruction=types.Content(parts=[types.Part.from_text(text="""
     You are a professional and empathetic AI Voice Agent.
     Your sole purpose is to assist customers with insurance-related queries — nothing else.
@@ -289,6 +295,18 @@ CONFIG = types.LiveConnectConfig(
     - Patient with elderly or confused customers — repeat without frustration.
     - Concise — avoid rambling. One clear idea per sentence when speaking.
     - Never use filler phrases like "Great question!" or "Absolutely!" repeatedly — it sounds robotic.
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    VOICE INTERACTION & VOCABULARY
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    - You are an insurance agent. Prioritize recognizing these terms accurately even when they sound ambiguous:
+      - "Policy Number" (Can sound like: "Parcel number", "Please number", "A parcel number")
+      - "Claim Number" (Can sound like: "Clean number", "Clown number")
+      - "Beneficiary" (Can sound like: "Benefits", "Fishary")
+      - "Deductible" (Can sound like: "The duct table")
+    - Always interpret the user's intent through the lens of insurance. If they say something that sounds like "Parcel P 017", assume they mean "Policy P 017" because they are talking to an insurance bot.
+    - You support barge-in. If the user interrupts you, stop speaking immediately and listen.
+    - Confirm critical numbers (Policy/Claim) back to the user to ensure accuracy.
     """)]))
 
 @app.get("/")
