@@ -30,115 +30,6 @@ let visualizerInterval = null;
 let activeAudio = null;
 let activeButton = null;
 
-// Connecting / ring state
-let isWaitingForAgent = false;
-let ringOscillator = null;
-let ringGain = null;
-let ringAudioCtx = null;
-let ringInterval = null;
-
-function showConnectingOverlay() {
-    isWaitingForAgent = true;
-    // Clear welcome screen
-    if (transcriptArea.querySelector('.welcome-screen')) {
-        transcriptArea.innerHTML = '';
-    }
-    // Remove any existing overlay
-    const existing = document.getElementById('connectingOverlay');
-    if (existing) existing.remove();
-
-    const overlay = document.createElement('div');
-    overlay.id = 'connectingOverlay';
-    overlay.className = 'connecting-overlay';
-    overlay.innerHTML = `
-        <div class="connecting-ring-visual">
-            <div class="ring-circle ring-circle-1"></div>
-            <div class="ring-circle ring-circle-2"></div>
-            <div class="ring-circle ring-circle-3"></div>
-            <div class="ring-icon">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
-                </svg>
-            </div>
-        </div>
-        <h3 class="connecting-title">Connecting to Agent</h3>
-        <p class="connecting-subtitle">Please wait while we connect you...</p>
-        <div class="connecting-dots">
-            <span></span><span></span><span></span>
-        </div>
-    `;
-    transcriptArea.appendChild(overlay);
-    startRingTone();
-}
-
-function hideConnectingOverlay() {
-    if (!isWaitingForAgent) return;
-    isWaitingForAgent = false;
-    stopRingTone();
-    const overlay = document.getElementById('connectingOverlay');
-    if (overlay) {
-        overlay.classList.add('fade-out');
-        setTimeout(() => overlay.remove(), 400);
-    }
-}
-
-function startRingTone() {
-    try {
-        ringAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        ringGain = ringAudioCtx.createGain();
-        ringGain.gain.value = 0;
-        ringGain.connect(ringAudioCtx.destination);
-
-        // Play ring pattern: two short beeps, then pause
-        let ringOn = false;
-        let beepCount = 0;
-
-        function playBeep() {
-            if (!ringAudioCtx || ringAudioCtx.state === 'closed') return;
-
-            const osc = ringAudioCtx.createOscillator();
-            const beepGain = ringAudioCtx.createGain();
-            osc.type = 'sine';
-            osc.frequency.value = beepCount % 2 === 0 ? 440 : 480; // classic dual-tone ring
-            beepGain.gain.value = 0.08;
-            osc.connect(beepGain);
-            beepGain.connect(ringAudioCtx.destination);
-            osc.start();
-            // Fade out after 400ms
-            beepGain.gain.setValueAtTime(0.08, ringAudioCtx.currentTime);
-            beepGain.gain.exponentialRampToValueAtTime(0.001, ringAudioCtx.currentTime + 0.4);
-            osc.stop(ringAudioCtx.currentTime + 0.4);
-            beepCount++;
-        }
-
-        // Ring pattern: beep-beep (0.5s each) then 2s silence, repeat
-        let phase = 0;
-        function ringCycle() {
-            if (!isWaitingForAgent) return;
-            if (phase === 0 || phase === 1) {
-                playBeep();
-            }
-            phase = (phase + 1) % 6; // 0,1 = beeps (each 500ms), 2-5 = silence (2000ms)
-        }
-        ringCycle();
-        ringInterval = setInterval(ringCycle, 500);
-
-    } catch (e) {
-        console.warn('Ring tone unavailable:', e);
-    }
-}
-
-function stopRingTone() {
-    if (ringInterval) {
-        clearInterval(ringInterval);
-        ringInterval = null;
-    }
-    if (ringAudioCtx && ringAudioCtx.state !== 'closed') {
-        ringAudioCtx.close().catch(() => {});
-        ringAudioCtx = null;
-    }
-}
-
 // Initialize Visualizer Bars
 function initVisualizer() {
     visualizer.innerHTML = '';
@@ -390,7 +281,7 @@ newChatBtn.onclick = () => {
     transcriptArea.innerHTML = `
         <div class="welcome-screen">
             <div class="welcome-orb"></div>
-            <h2>Conversational AI</h2>
+            <h2>Gemini Live</h2>
             <p>Click start to begin a real-time voice conversation</p>
             <div class="feature-pills">
                 <div class="feature-pill">🎙️ Real-time Audio</div>
@@ -440,8 +331,7 @@ function connectWebSocket() {
 
     ws.onopen = () => {
         connStatus.classList.add('connected');
-        connText.innerText = 'Connecting...';
-        showConnectingOverlay();
+        connText.innerText = 'Live';
         startRecording();
     };
 
@@ -456,14 +346,7 @@ function connectWebSocket() {
         if (typeof event.data === 'string') {
             const data = JSON.parse(event.data);
             if (data.type === 'clear_audio_queue') flushPlayback();
-            else if (data.type === 'transcript') {
-                // Agent's first transcript = call connected
-                if (isWaitingForAgent && data.sender === 'Assistant') {
-                    hideConnectingOverlay();
-                    connText.innerText = 'Live';
-                }
-                appendMessage(data.sender, data.text);
-            }
+            else if (data.type === 'transcript') appendMessage(data.sender, data.text);
             else if (data.type === 'latency') {
                 if (latencyInfo) {
                     latencyInfo.style.display = 'flex';
@@ -472,11 +355,6 @@ function connectWebSocket() {
                 }
             }
         } else {
-            // Agent's first audio = call connected
-            if (isWaitingForAgent) {
-                hideConnectingOverlay();
-                connText.innerText = 'Live';
-            }
             processAudioChunk(event.data);
         }
     };

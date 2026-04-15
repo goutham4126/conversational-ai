@@ -144,15 +144,15 @@ CONFIG = types.LiveConnectConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
         )
     ),
-    # realtime_input_config=types.RealtimeInputConfig(
-    #     automatic_activity_detection=types.AutomaticActivityDetection(
-    #         disabled=False,
-    #         start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,  # Less trigger-happy
-    #         end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,        # Wait longer before cutting off
-    #         prefix_padding_ms=300,      # ms of audio required before speech is confirmed
-    #         silence_duration_ms=1000,   # ms of silence before turn is considered done
-    #     )
-    # ),
+    realtime_input_config=types.RealtimeInputConfig(
+        automatic_activity_detection=types.AutomaticActivityDetection(
+            disabled=False,  # Keep VAD on
+            start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,  # Less trigger-happy
+            end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,        # Wait longer before cutting off
+            prefix_padding_ms=300,      # ms of audio required before speech is confirmed
+            silence_duration_ms=1000,   # ms of silence before turn is considered done
+        )
+    ),
     input_audio_transcription=types.AudioTranscriptionConfig(language_codes=["en-US"]),
     output_audio_transcription=types.AudioTranscriptionConfig(),
     system_instruction=types.Content(parts=[types.Part.from_text(text="""
@@ -454,12 +454,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
     You are now resuming this session. Continue naturally from where it left off.
     """
 
+    # ── Build a session-specific CONFIG with history injected ─────────────
     base_instruction = CONFIG.system_instruction.parts[0].text
     session_config = types.LiveConnectConfig(
         response_modalities=CONFIG.response_modalities,
         media_resolution=CONFIG.media_resolution,
         speech_config=CONFIG.speech_config,
-        # realtime_input_config=CONFIG.realtime_input_config,
+        realtime_input_config=CONFIG.realtime_input_config,
         input_audio_transcription=CONFIG.input_audio_transcription,
         output_audio_transcription=CONFIG.output_audio_transcription,
         system_instruction=types.Content(parts=[
@@ -490,10 +491,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
     try:
         async with client.aio.live.connect(model=MODEL_NAME, config=session_config) as session:
             log_event(Colors.GREEN, "✨", f"Connected to Gemini Live API ({MODEL_NAME})")
-            
-            # Agent speaks first — trigger the greeting
-            await session.send(input="The customer just connected to the call. Greet them warmly and introduce yourself as per your instructions.", end_of_turn=True)
-            log_event(Colors.CYAN, "👋", "Sent initial greeting prompt to agent")
             
             async def receive_from_browser():
                 nonlocal user_audio_turn_buffer, assistant_audio_turn_buffer
