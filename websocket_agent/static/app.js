@@ -223,6 +223,15 @@ async function selectSession(id) {
         } else {
             messages.forEach(msg => appendMessage(msg.sender, msg.text, true, msg.audio_path));
         }
+
+        // Restore cached summary if available
+        const cached = getSavedSummary(id);
+        if (cached) {
+            showSummaryCard({ summary: cached });
+        } else {
+            hideSummaryCard();
+        }
+
     } catch (err) {
         console.error('Failed to load history:', err);
     }
@@ -281,14 +290,15 @@ newChatBtn.onclick = () => {
     transcriptArea.innerHTML = `
         <div class="welcome-screen">
             <div class="welcome-orb"></div>
-            <h2>Gemini Live</h2>
+            <h2>Conversational AI</h2>
             <p>Click start to begin a real-time voice conversation</p>
             <div class="feature-pills">
                 <div class="feature-pill">🎙️ Real-time Audio</div>
                 <div class="feature-pill">📝 Auto Transcription</div>
                 <div class="feature-pill">☁️ Cloud Backup</div>
             </div>
-        </div>`;
+        </div>
+        `;
     fetchSessions();
 };
 
@@ -335,19 +345,32 @@ function connectWebSocket() {
         startRecording();
     };
 
-    ws.onclose = () => {
+    ws.onclose = async () => {
         connStatus.classList.remove('connected');
         connText.innerText = 'Disconnected';
+        // Capture session id before stopRecording can reset state
+        const closedSessionId = currentSessionId;
         stopRecording();
-        fetchSessions(); // Refresh sessions to show the new one if it was created
+        fetchSessions();
+
+        // Generate post-call summary for whatever session just ended
+        if (closedSessionId) {
+            await generateAndStoreSummary(closedSessionId);
+        }
     };
 
     ws.onmessage = async (event) => {
         if (typeof event.data === 'string') {
             const data = JSON.parse(event.data);
-            if (data.type === 'clear_audio_queue') flushPlayback();
-            else if (data.type === 'transcript') appendMessage(data.sender, data.text);
-            else if (data.type === 'latency') {
+            if (data.type === 'session_init') {
+                // Server tells us the real session id (critical for new sessions)
+                currentSessionId = data.session_id;
+                console.log('[WS] Session ID received from server:', currentSessionId);
+            } else if (data.type === 'clear_audio_queue') {
+                flushPlayback();
+            } else if (data.type === 'transcript') {
+                appendMessage(data.sender, data.text);
+            } else if (data.type === 'latency') {
                 if (latencyInfo) {
                     latencyInfo.style.display = 'flex';
                     currentLatency.innerText = `${data.current}ms`;
@@ -441,6 +464,110 @@ async function syncFromCloud() {
 }
 
 if (syncBtn) syncBtn.onclick = syncFromCloud;
+
+// ── Post-Call Summary ─────────────────────────────────────────────────────────
+
+async function generateAndStoreSummary(sessionId) {
+    try {
+        // Brief delay to let DB writes finish
+        await new Promise(r => setTimeout(r, 1500));
+        showSummaryCard({ loading: true });
+
+        const res = await fetch(`/api/sessions/${sessionId}/summary`, { method: 'POST' });
+        const data = await res.json();
+
+        if (data.status === 'success' && data.summary) {
+            // Persist in localStorage keyed by session id
+            localStorage.setItem(`summary_${sessionId}`, JSON.stringify(data.summary));
+            showSummaryCard({ summary: data.summary });
+        } else {
+            hideSummaryCard();
+        }
+    } catch (err) {
+        console.error('Summary generation failed:', err);
+        hideSummaryCard();
+    }
+}
+
+function getSavedSummary(sessionId) {
+    try {
+        const raw = localStorage.getItem(`summary_${sessionId}`);
+        return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+}
+
+function showSummaryCard({ loading = false, summary = null } = {}) {
+    let card = document.getElementById('summaryCard');
+    const transcriptArea = document.getElementById('transcriptArea');
+
+    if (!card) {
+        card = document.createElement('div');
+        card.id = 'summaryCard';
+        card.className = 'summary-card';
+        // Insert at the very top of the transcript area so it scrolls with history
+        transcriptArea.prepend(card);
+    }
+
+    if (loading) {
+        card.className = 'summary-card loading';
+        card.innerHTML = `
+            <div class="summary-header">
+                <div class="summary-spinner"></div>
+                <span class="summary-title-text">Generating call summary…</span>
+            </div>`;
+        card.style.display = 'block';
+        return;
+    }
+
+    if (!summary) { hideSummaryCard(); return; }
+
+    const sentimentEmoji = { positive: '😊', neutral: '😐', negative: '😟', escalated: '🚨' };
+    const sentimentClass = { positive: 'sentiment-positive', neutral: 'sentiment-neutral', negative: 'sentiment-negative', escalated: 'sentiment-escalated' };
+    const emoji = sentimentEmoji[summary.sentiment] || '😐';
+    const sClass = sentimentClass[summary.sentiment] || 'sentiment-neutral';
+
+    const keyTopicsHTML = (summary.key_topics || []).map(t =>
+        `<span class="summary-tag">${t}</span>`
+    ).join('');
+
+    const actionItemsHTML = (summary.action_items || []).length > 0
+        ? `<div class="summary-section">
+                <div class="summary-section-label">Action Items</div>
+                <ul class="summary-action-list">${(summary.action_items || []).map(a => `<li>${a}</li>`).join('')}</ul>
+           </div>`
+        : '';
+
+    card.className = 'summary-card';
+    card.innerHTML = `
+        <div class="summary-header">
+            <div class="summary-icon">📋</div>
+            <div class="summary-title-text">${summary.title || 'Call Summary'}</div>
+            <span class="summary-sentiment-badge ${sClass}">${emoji} ${summary.sentiment || 'neutral'}</span>
+            <button class="summary-close-btn" onclick="hideSummaryCard()" title="Dismiss">✕</button>
+        </div>
+        <div class="summary-body">
+            <div class="summary-section">
+                <div class="summary-section-label">Summary</div>
+                <p class="summary-text">${summary.summary || ''}</p>
+            </div>
+            ${summary.customer_intent ? `<div class="summary-section">
+                <div class="summary-section-label">Customer Intent</div>
+                <p class="summary-text">${summary.customer_intent}</p>
+            </div>` : ''}
+            ${summary.resolution ? `<div class="summary-section">
+                <div class="summary-section-label">Resolution</div>
+                <p class="summary-text">${summary.resolution}</p>
+            </div>` : ''}
+            ${actionItemsHTML}
+            ${keyTopicsHTML ? `<div class="summary-topics">${keyTopicsHTML}</div>` : ''}
+        </div>`;
+    card.style.display = 'block';
+}
+
+function hideSummaryCard() {
+    const card = document.getElementById('summaryCard');
+    if (card) card.style.display = 'none';
+}
 
 // Initial load
 fetchSessions();

@@ -18,6 +18,8 @@ from datetime import datetime, timedelta
 from google.cloud import storage
 import io
 import wave
+from google.adk.runners import InMemoryRunner
+from agent import summary_agent
 
 load_dotenv()
 
@@ -28,11 +30,16 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS sessions
-                 (id TEXT PRIMARY KEY, title TEXT, created_at TIMESTAMP)''')
+                 (id TEXT PRIMARY KEY, title TEXT, created_at TIMESTAMP, summary TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS messages
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, 
                   sender TEXT, text TEXT, created_at TIMESTAMP, audio_path TEXT,
                   FOREIGN KEY(session_id) REFERENCES sessions(id))''')
+    # Migrate: add summary column if it doesn't exist yet
+    try:
+        c.execute('ALTER TABLE sessions ADD COLUMN summary TEXT')
+    except Exception:
+        pass  # Column already exists
     conn.commit()
     conn.close()
 
@@ -407,6 +414,74 @@ async def delete_session(session_id: str):
     conn.close()
     return {"status": "success"}
 
+@app.post("/api/sessions/{session_id}/summary")
+async def generate_summary(session_id: str):
+    """Generate a post-call summary using the ADK summary_agent."""
+    # 1. Fetch transcript from DB
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT sender, text FROM messages
+        WHERE session_id = ? AND text IS NOT NULL AND text != ''
+          AND text != '[Discovered from Cloud]'
+        ORDER BY created_at ASC
+    """, (session_id,))
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        return {"error": "No transcript found for this session"}
+
+    # 2. Build transcript string
+    transcript = "\n".join(f"{sender}: {text}" for sender, text in rows)
+    prompt = f"Please summarize the following insurance support call transcript:\n\n{transcript}"
+
+    try:
+        # 3. Run through ADK summary_agent
+        runner = InMemoryRunner(agent=summary_agent)
+        adk_session = await runner.session_service.create_session(
+            app_name=runner.app_name, user_id="system"
+        )
+
+        from google.genai.types import Content, Part
+        response_text = ""
+        async for event in runner.run_async(
+            session_id=adk_session.id,
+            user_id="system",
+            new_message=Content(role="user", parts=[Part(text=prompt)])
+        ):
+            if event.is_final_response() and event.content and event.content.parts:
+                for part in event.content.parts:
+                    if hasattr(part, 'text') and part.text:
+                        response_text += part.text
+
+        # 4. Parse and return JSON
+        # Strip any accidental markdown code fences
+        cleaned = response_text.strip().strip('`').strip()
+        if cleaned.startswith('json'):
+            cleaned = cleaned[4:].strip()
+        summary_data = json.loads(cleaned)
+        log_event(Colors.GREEN, "📋", f"Summary generated for session {session_id}: {summary_data.get('title', 'N/A')}")
+        # Persist summary to DB so it can be used as session context on resume
+        try:
+            db_conn = sqlite3.connect(DB_PATH)
+            db_conn.execute("UPDATE sessions SET summary = ?, title = ? WHERE id = ?",
+                            (json.dumps(summary_data), summary_data.get('title', 'Call Summary'), session_id))
+            db_conn.commit()
+            db_conn.close()
+        except Exception as db_err:
+            log_event(Colors.YELLOW, "⚠️", f"Failed to persist summary to DB: {db_err}")
+        return {"status": "success", "summary": summary_data, "session_id": session_id}
+
+    except json.JSONDecodeError as e:
+        log_event(Colors.YELLOW, "⚠️", f"Summary JSON parse failed: {e}. Raw: {response_text[:200]}")
+        fallback = {"title": "Call Summary", "summary": response_text, "sentiment": "neutral", "key_topics": [], "action_items": [], "customer_intent": "", "resolution": "", "call_quality": "normal"}
+        return {"status": "success", "summary": fallback, "session_id": session_id}
+    except Exception as e:
+        log_event(Colors.RED, "❌", f"Summary generation error: {e}")
+        traceback.print_exc()
+        return {"error": str(e)}
+
 @app.websocket("/ws")
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = None):
@@ -423,35 +498,43 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
         conn.commit()
         conn.close()
 
+    # ── Tell the client which session this is (critical for new sessions) ──
+    await websocket.send_text(json.dumps({"type": "session_init", "session_id": session_id}))
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("""
-        SELECT sender, text FROM messages 
-        WHERE session_id = ? AND text IS NOT NULL AND text != ''
-        ORDER BY created_at ASC
-    """, (session_id,))
-    history_rows = c.fetchall()
+    # Prefer the stored post-call summary for context (compact & clean)
+    c.execute("SELECT summary FROM sessions WHERE id = ?", (session_id,))
+    summary_row = c.fetchone()
+    stored_summary = None
+    if summary_row and summary_row[0]:
+        try:
+            stored_summary = json.loads(summary_row[0])
+        except Exception:
+            stored_summary = None
     conn.close()
 
     history_block = ""
-    if history_rows:
-        history_lines = "\n".join(
-            f"{sender}: {text}" for sender, text in history_rows
-            if text and "[Discovered from Cloud]" not in text
-        )
+    if stored_summary:
+        # Use the generated summary — much more compact than raw transcript
         history_block = f"""
 
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    SESSION MEMORY (CURRENT SESSION HISTORY)
+    PREVIOUS CALL SUMMARY
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    The following is the transcript of the current session so far.
-    Use this to maintain continuity — remember what was already discussed,
-    avoid repeating questions you already asked, and build on prior context.
+    This session was previously completed. Here is its summary:
 
-    {history_lines}
+    Title: {stored_summary.get('title', '')}
+    Customer Intent: {stored_summary.get('customer_intent', '')}
+    Resolution: {stored_summary.get('resolution', '')}
+    Key Topics: {', '.join(stored_summary.get('key_topics', []))}
+    Action Items: {'; '.join(stored_summary.get('action_items', [])) or 'None'}
+    Sentiment: {stored_summary.get('sentiment', 'neutral')}
+    Summary: {stored_summary.get('summary', '')}
 
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    You are now resuming this session. Continue naturally from where it left off.
+    The customer is calling back. Use this context to maintain continuity — you
+    already know what was discussed. Do not repeat resolved matters; build forward.
     """
 
     # ── Build a session-specific CONFIG with history injected ─────────────
@@ -470,8 +553,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
     # ──────────────────────────────────────────────────────────────────────
 
     log_event(Colors.CYAN, "🔌", f"Browser connected to WebSocket (Session: {session_id})")
-    if history_rows:
-        log_event(Colors.CYAN, "📜", f"Injected {len(history_rows)} messages of session history")
+    if stored_summary:
+        log_event(Colors.CYAN, "📋", f"Injected post-call summary as context: {stored_summary.get('title', 'N/A')}")
 
     out_queue = asyncio.Queue(maxsize=10)
     
