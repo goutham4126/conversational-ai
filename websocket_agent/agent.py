@@ -1,12 +1,7 @@
 from google.adk.agents.llm_agent import Agent
+import requests
 
-root_agent = Agent(
-    model='gemini-2.5-flash',
-    name='root_agent',
-    description='A helpful assistant for user questions.',
-    instruction='Answer user questions to the best of your knowledge',
-)
-
+# post call summary
 summary_agent = Agent(
     model='gemini-2.5-flash',
     name='call_summary_agent',
@@ -36,3 +31,39 @@ summary_agent = Agent(
   - Respond ONLY with the JSON object, no markdown formatting, no code blocks, no extra text
   """,
   )
+
+
+
+
+
+# Mcp testing
+
+BASE_URL = "http://localhost:8001/tools"
+
+def get_posts():
+    return requests.get(f"{BASE_URL}/get_posts").json()
+
+def get_post_by_id(post_id: int):
+    return requests.get(
+        f"{BASE_URL}/get_post_by_id",
+        params={"post_id": post_id}
+    ).json()
+
+def get_posts_by_user(user_id: int):
+    return requests.get(
+        f"{BASE_URL}/get_posts_by_user",
+        params={"user_id": user_id}
+    ).json()
+
+root_agent = Agent(
+    model="gemini-2.5-flash",
+    name="posts_agent",
+    description="Handles posts queries",
+    instruction="""
+Use tools to answer user queries:
+- Use get_posts for all posts
+- Use get_post_by_id when user asks for specific post
+- Use get_posts_by_user when user asks posts by user
+""",
+    tools=[get_posts, get_post_by_id, get_posts_by_user]
+)

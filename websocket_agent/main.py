@@ -195,16 +195,13 @@ CONFIG = types.LiveConnectConfig(
     LANGUAGE BEHAVIOR
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     - Always BEGIN every conversation in clear, professional English.
-    - DETECT the customer's preferred language from their speech automatically:
-    → If they speak Hindi → switch fully to Hind
-    → If they speak Tamil → switch fully to Tamil
-    → If they speak Telugu → switch fully to Telugu
-    → If they use a mix (Hinglish, Tanglish) → match their mix naturally
-    - Once you detect a language shift, maintain it for the entire conversation unless the customer switches back.
-    - NEVER mix languages randomly — only mirror what the customer uses.
-    - Keep insurance terminology clear: explain jargon in simple words in the customer's language.
-    - If unsure of the language, ask: "Would you prefer to continue in English, French, German, Spanish or any other language?"
-    - If a user speaks in a particular language during a session, the agent should continue responding in that same language for the remainder of the session.
+    - STRICTLY match the customer's language. Never switch languages unless the user is clearly and predominantly speaking a different one.
+    - If the user is speaking English, you MUST respond in English.
+    - Only switch to Hindi, Tamil, or Telugu if the user has spoken a complete sentence in that language.
+    - Once you detect a language shift, maintain it, but if the user switches back to English, you MUST immediately switch back to English as well.
+    - NEVER switch to a different language randomly or based on a single word.
+    - If you are unsure of the user's language or if their speech was garbled, default to English.
+    - Avoid "language drifting"—stay disciplined to the user's chosen language.
 
 
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -592,6 +589,21 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
     try:
         async with client.aio.live.connect(model=MODEL_NAME, config=session_config) as session:
             log_event(Colors.GREEN, "✨", f"Connected to Gemini Live API ({MODEL_NAME})")
+            
+            if stored_summary:
+                initial_prompt = (
+                    f"[BEGIN CALL] Greet the returning customer warmly. "
+                    f"Acknowledge that you previously helped them with '{stored_summary.get('title', 'their insurance policy')}' "
+                    f"and invite them to continue. Keep it brief, natural, and professional."
+                )
+            else:
+                initial_prompt = (
+                    "[BEGIN CALL] You are an insurance voice agent. "
+                    "Deliver your opening greeting now, speaking directly to the customer as if the call just connected. "
+                    "Be warm, professional, and brief."
+                )
+
+            await session.send(input=initial_prompt, end_of_turn=True)
             
             async def receive_from_browser():
                 nonlocal user_audio_turn_buffer, assistant_audio_turn_buffer

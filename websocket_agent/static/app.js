@@ -21,6 +21,63 @@ const latencyInfo = document.getElementById('latencyInfo');
 const currentLatency = document.getElementById('currentLatency');
 const avgLatency = document.getElementById('avgLatency');
 const syncBtn = document.getElementById('syncBtn');
+const callingOverlay = document.getElementById('callingOverlay');
+
+let ringbackTone = null;
+
+class RingbackTone {
+    constructor() {
+        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        this.osc1 = null;
+        this.osc2 = null;
+        this.gain = null;
+        this.isPlaying = false;
+    }
+
+    start() {
+        if (this.isPlaying) return;
+        this.isPlaying = true;
+        this.playSequence();
+    }
+
+    playSequence() {
+        if (!this.isPlaying) return;
+
+        this.osc1 = this.ctx.createOscillator();
+        this.osc2 = this.ctx.createOscillator();
+        this.gain = this.ctx.createGain();
+
+        this.osc1.frequency.value = 440;
+        this.osc2.frequency.value = 480;
+        this.gain.gain.value = 0.1;
+
+        this.osc1.connect(this.gain);
+        this.osc2.connect(this.gain);
+        this.gain.connect(this.ctx.destination);
+
+        this.osc1.start();
+        this.osc2.start();
+
+        // US Ringback: 2s on, 4s off
+        setTimeout(() => {
+            if (this.isPlaying) this.stopCurrent();
+            this.timerId = setTimeout(() => this.playSequence(), 4000);
+        }, 2000);
+    }
+
+    stopCurrent() {
+        if (this.osc1) { this.osc1.stop(); this.osc1.disconnect(); }
+        if (this.osc2) { this.osc2.stop(); this.osc2.disconnect(); }
+        if (this.gain) { this.gain.disconnect(); }
+        this.osc1 = null; this.osc2 = null; this.gain = null;
+    }
+
+    stop() {
+        this.isPlaying = false;
+        this.stopCurrent();
+        if (this.timerId) clearTimeout(this.timerId);
+    }
+}
 
 let currentSender = null;
 let currentMessageContentDiv = null;
@@ -339,6 +396,15 @@ function connectWebSocket() {
     ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
 
+    // Force a new message bubble for the new connection
+    currentSender = null;
+    currentMessageContentDiv = null;
+
+    // Show connecting UI and start sound
+    if (callingOverlay) callingOverlay.style.display = 'flex';
+    if (!ringbackTone) ringbackTone = new RingbackTone();
+    ringbackTone.start();
+
     ws.onopen = () => {
         connStatus.classList.add('connected');
         connText.innerText = 'Live';
@@ -348,6 +414,10 @@ function connectWebSocket() {
     ws.onclose = async () => {
         connStatus.classList.remove('connected');
         connText.innerText = 'Disconnected';
+
+        // Clear connecting state if it was still active
+        if (callingOverlay) callingOverlay.style.display = 'none';
+        if (ringbackTone) ringbackTone.stop();
         // Capture session id before stopRecording can reset state
         const closedSessionId = currentSessionId;
         stopRecording();
@@ -368,7 +438,14 @@ function connectWebSocket() {
                 console.log('[WS] Session ID received from server:', currentSessionId);
             } else if (data.type === 'clear_audio_queue') {
                 flushPlayback();
+                // When interrupted, ensure next AI response starts a new bubble
+                currentSender = null;
+                currentMessageContentDiv = null;
             } else if (data.type === 'transcript') {
+                // As soon as we get the first transcript or response, stop the ringing
+                if (callingOverlay) callingOverlay.style.display = 'none';
+                if (ringbackTone) ringbackTone.stop();
+                
                 appendMessage(data.sender, data.text);
             } else if (data.type === 'latency') {
                 if (latencyInfo) {
@@ -378,6 +455,10 @@ function connectWebSocket() {
                 }
             }
         } else {
+            // First audio chunk also stops the ringing
+            if (callingOverlay) callingOverlay.style.display = 'none';
+            if (ringbackTone) ringbackTone.stop();
+
             processAudioChunk(event.data);
         }
     };
