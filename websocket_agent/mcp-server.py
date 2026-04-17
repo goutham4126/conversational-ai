@@ -3,56 +3,62 @@ import requests
 
 app = FastAPI()
 
-BASE_URL = "https://jsonplaceholder.typicode.com"
+BASE_URL = "https://insurance-api-471936962134.us-central1.run.app"
 
-# Get all posts
-@app.get("/tools/get_posts")
-async def get_posts():
-    res = requests.get(f"{BASE_URL}/posts")
+
+@app.get("/tools/get_customer")
+async def get_customer(email: str):
+    res = requests.get(f"{BASE_URL}/customer/{email}")
     return res.json()
 
-# Get post by ID
-@app.get("/tools/get_post_by_id")
-async def get_post_by_id(post_id: int):
-    res = requests.get(f"{BASE_URL}/posts/{post_id}")
+
+@app.get("/tools/get_claim")
+async def get_claim(claim_number: str):
+    res = requests.get(f"{BASE_URL}/claim/{claim_number}")
     return res.json()
 
-# Get posts by user ID
-@app.get("/tools/get_posts_by_user")
-async def get_posts_by_user(user_id: int):
-    res = requests.get(f"{BASE_URL}/posts", params={"userId": user_id})
+
+@app.get("/tools/get_full_details")
+async def get_full_details(email: str):
+    res = requests.get(f"{BASE_URL}/full-details/{email}")
     return res.json()
 
-# Tool registry
+
 @app.get("/tools")
 async def list_tools():
     return {
         "tools": [
             {
-                "name": "get_posts",
-                "description": "Get all posts",
-                "input_schema": {"type": "object", "properties": {}}
-            },
-            {
-                "name": "get_post_by_id",
-                "description": "Get a post by ID",
+                "name": "get_customer",
+                "description": "Get customer details using email",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "post_id": {"type": "integer"}
+                        "email": {"type": "string"}
                     },
-                    "required": ["post_id"]
+                    "required": ["email"]
                 }
             },
             {
-                "name": "get_posts_by_user",
-                "description": "Get posts by user ID",
+                "name": "get_claim",
+                "description": "Get claim details using claim ID",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "user_id": {"type": "integer"}
+                        "claim_id": {"type": "integer"}
                     },
-                    "required": ["user_id"]
+                    "required": ["claim_id"]
+                }
+            },
+            {
+                "name": "get_full_details",
+                "description": "Get full insurance details",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "email": {"type": "string"}
+                    },
+                    "required": ["email"]
                 }
             }
         ]

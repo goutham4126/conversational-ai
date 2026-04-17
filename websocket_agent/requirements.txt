@@ -6,3 +6,4 @@ google-adk
 google-auth
 pydantic
 python-dotenv
+mcp

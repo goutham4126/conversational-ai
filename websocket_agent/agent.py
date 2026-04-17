@@ -37,33 +37,45 @@ summary_agent = Agent(
 
 
 # Mcp testing
+import requests
+from google.adk.agents.llm_agent import Agent
 
 BASE_URL = "http://localhost:8001/tools"
 
-def get_posts():
-    return requests.get(f"{BASE_URL}/get_posts").json()
 
-def get_post_by_id(post_id: int):
+def get_customer(email: str):
     return requests.get(
-        f"{BASE_URL}/get_post_by_id",
-        params={"post_id": post_id}
+        f"{BASE_URL}/get_customer",
+        params={"email": email}
     ).json()
 
-def get_posts_by_user(user_id: int):
+
+def get_claim(claim_number: str):
     return requests.get(
-        f"{BASE_URL}/get_posts_by_user",
-        params={"user_id": user_id}
+        f"{BASE_URL}/get_claim",
+        params={"claim_number": claim_number}
     ).json()
+
+
+def get_full_details(email: str):
+    return requests.get(
+        f"{BASE_URL}/get_full_details",
+        params={"email": email}
+    ).json()
+
 
 root_agent = Agent(
     model="gemini-2.5-flash",
-    name="posts_agent",
-    description="Handles posts queries",
+    name="insurance_agent",
+    description="Handles insurance queries",
     instruction="""
-Use tools to answer user queries:
-- Use get_posts for all posts
-- Use get_post_by_id when user asks for specific post
-- Use get_posts_by_user when user asks posts by user
+Use tools smartly:
+
+- If user gives email → use get_full_details
+- If user asks only customer info → use get_customer
+- If claim number is given → use get_claim
+
+Prefer get_full_details for complete queries.
 """,
-    tools=[get_posts, get_post_by_id, get_posts_by_user]
+    tools=[get_customer, get_claim, get_full_details]
 )
