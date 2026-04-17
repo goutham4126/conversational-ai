@@ -36,46 +36,61 @@ summary_agent = Agent(
 
 
 
-# Mcp testing
-import requests
-from google.adk.agents.llm_agent import Agent
+# MCP Tool Integration
+import json
+import asyncio
+from mcp import ClientSession
+from mcp.client.sse import sse_client
 
-BASE_URL = "http://localhost:8001/tools"
+MCP_SERVER_URL = "http://localhost:8001/sse"
 
+async def _call_mcp_tool(tool_name: str, arguments: dict):
+    """Internal helper to call an MCP tool via SSE transport."""
+    try:
+        async with sse_client(MCP_SERVER_URL) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(tool_name, arguments)
+                
+                # MCP tool results are returned as a list of content blocks
+                if not result.content:
+                    return {"error": "No content returned from tool"}
+                
+                # Try to parse as JSON if it looks like a JSON string, otherwise return raw text
+                content_text = result.content[0].text
+                try:
+                    return json.loads(content_text)
+                except:
+                    return content_text
+    except Exception as e:
+        return {"error": f"MCP Client Error: {str(e)}"}
 
-def get_customer(email: str):
-    return requests.get(
-        f"{BASE_URL}/get_customer",
-        params={"email": email}
-    ).json()
+async def get_customer(email: str):
+    """Get basic customer details using their registered email address."""
+    return await _call_mcp_tool("get_customer", {"email": email})
 
+async def get_claim(claim_number: str):
+    """Retrieve specific claim details and status by claim number."""
+    return await _call_mcp_tool("get_claim", {"claim_number": claim_number})
 
-def get_claim(claim_number: str):
-    return requests.get(
-        f"{BASE_URL}/get_claim",
-        params={"claim_number": claim_number}
-    ).json()
-
-
-def get_full_details(email: str):
-    return requests.get(
-        f"{BASE_URL}/get_full_details",
-        params={"email": email}
-    ).json()
+async def get_full_details(email: str):
+    """Get comprehensive insurance details including policies, all claims, and history for a customer."""
+    return await _call_mcp_tool("get_full_details", {"email": email})
 
 
 root_agent = Agent(
     model="gemini-2.5-flash",
     name="insurance_agent",
-    description="Handles insurance queries",
+    description="Handles insurance queries by leveraging official MCP tools.",
     instruction="""
+You are an expert insurance assistant. Use the provided MCP tools to answer customer questions accurately.
+
 Use tools smartly:
+- If user gives email → use get_full_details for a complete overview.
+- If user asks specifically for customer info → use get_customer.
+- If a claim number is mentioned (e.g. CLM101) → use get_claim.
 
-- If user gives email → use get_full_details
-- If user asks only customer info → use get_customer
-- If claim number is given → use get_claim
-
-Prefer get_full_details for complete queries.
+Prefer get_full_details when you need a holistic view of the customer's account.
 """,
     tools=[get_customer, get_claim, get_full_details]
 )
