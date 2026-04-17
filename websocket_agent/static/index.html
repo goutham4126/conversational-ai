@@ -71,6 +71,19 @@
                     </div>
                 </div>
                 <div class="header-right">
+                    <div class="voice-selector-container">
+                        <button id="voiceTrigger" class="voice-trigger" title="Select Assistant Voice">
+                            <div class="voice-trigger-content">
+                                <span id="activeVoiceName">Zephyr</span>
+                            </div>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="m6 9 6 6 6-6"/>
+                            </svg>
+                        </button>
+                        <div id="voiceDropdown" class="voice-dropdown" style="display: none;">
+                            <!-- Injected via JavaScript -->
+                        </div>
+                    </div>
                     <button id="syncBtn" class="sync-action-btn" title="Sync from Cloud" style="display: none;">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
                     </button>
@@ -87,9 +100,9 @@
                     <h2>Conversational AI</h2>
                     <p>Click start to begin a real-time voice conversation</p>
                     <div class="feature-pills">
-                        <div class="feature-pill">🎙️ Real-time Audio</div>
-                        <div class="feature-pill">📝 Auto Transcription</div>
-                        <div class="feature-pill">☁️ Cloud Backup</div>
+                        <div class="feature-pill">Real-time Audio</div>
+                        <div class="feature-pill">Auto Transcription</div>
+                        <div class="feature-pill">Cloud Backup</div>
                     </div>
                 </div>
                 <!-- Transcripts appear here -->

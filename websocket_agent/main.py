@@ -4,7 +4,7 @@ import json
 import traceback
 import base64
 import io
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.staticfiles import StaticFiles
 from google import genai
 from google.genai import types
@@ -146,11 +146,7 @@ MODEL_NAME = "gemini-live-2.5-flash-native-audio"
 CONFIG = types.LiveConnectConfig(
     response_modalities=["AUDIO"],
     media_resolution="MEDIA_RESOLUTION_MEDIUM",
-    speech_config=types.SpeechConfig(
-        voice_config=types.VoiceConfig(
-            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
-        )
-    ),
+    # speech_config moved to session-specific config to ensure dynamic selection
     realtime_input_config=types.RealtimeInputConfig(
         automatic_activity_detection=types.AutomaticActivityDetection(
             disabled=False,  # Keep VAD on
@@ -499,10 +495,12 @@ async def generate_summary(session_id: str):
 
 @app.websocket("/ws")
 @app.websocket("/ws/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = None):
+async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = None, voice: str = Query("Zephyr")):
     await websocket.accept()
     
-    # os.makedirs("static/recordings", exist_ok=True)
+    # Explicitly get voice from query params to ensure it's captured
+    voice = websocket.query_params.get("voice", voice)
+    log_event(Colors.BOLD + Colors.CYAN, "🎙️", f"NEW SESSION: Voice chosen = {voice}")
     
     if not session_id:
         session_id = f"sess_{int(time.time())}"
@@ -552,12 +550,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
     already know what was discussed. Do not repeat resolved matters; build forward.
     """
 
-    # ── Build a session-specific CONFIG with history injected ─────────────
+    # ── Build a session-specific CONFIG with history and chosen voice injected ─────────────
     base_instruction = CONFIG.system_instruction.parts[0].text
     session_config = types.LiveConnectConfig(
         response_modalities=CONFIG.response_modalities,
         media_resolution=CONFIG.media_resolution,
-        speech_config=CONFIG.speech_config,
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice)
+            )
+        ),
         realtime_input_config=CONFIG.realtime_input_config,
         input_audio_transcription=CONFIG.input_audio_transcription,
         output_audio_transcription=CONFIG.output_audio_transcription,

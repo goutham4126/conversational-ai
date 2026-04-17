@@ -409,11 +409,12 @@ h1, h2, h3, h4, h5, h6 {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
-  border-radius: var(--radius-pill);
-  font-size: 12px;
+  padding: 0 16px;
+  min-height: 42px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
   font-weight: 600;
-  background: #fff;
+  background: var(--stripe-card);
   color: var(--stripe-text-secondary);
   border: 1px solid var(--stripe-border);
   box-shadow: var(--shadow-sm);
@@ -424,12 +425,139 @@ h1, h2, h3, h4, h5, h6 {
   background: #f0fff4;
   color: #12805c;
   border-color: #bdf3d4;
+  box-shadow: 0 4px 12px rgba(36, 180, 126, 0.1);
 }
 
 .status-badge.connected .dot {
   background: var(--stripe-success);
   box-shadow: 0 0 0 3px rgba(36, 180, 126, 0.2);
   animation: pulse-green 2s infinite;
+}
+
+/* Custom Voice Selector (Stripe-Style) */
+.voice-selector-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.voice-trigger {
+  background: var(--stripe-card);
+  border: 1px solid var(--stripe-border);
+  border-radius: var(--radius-md);
+  padding: 0 16px;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  cursor: pointer;
+  transition: all 150ms var(--ease-spring);
+  box-shadow: var(--shadow-sm);
+  outline: none;
+}
+
+.voice-trigger:hover {
+  border-color: #c1cbd6;
+  background-color: #fcfcfd;
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.voice-trigger-content {
+  display: flex;
+  align-items: center;
+  text-align: left;
+}
+
+#activeVoiceName {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--stripe-text-primary);
+}
+
+.voice-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 280px;
+  max-height: 400px;
+  background: white;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  border: 1px solid var(--stripe-border);
+  overflow-y: auto;
+  z-index: 1000;
+  padding: 8px 0;
+  animation: dropdownIn 200ms var(--ease-spring);
+  scrollbar-width: thin;
+  scrollbar-color: var(--stripe-border) transparent;
+}
+
+@keyframes dropdownIn {
+  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Sleeky Slider (Custom Scrollbar) */
+.voice-dropdown::-webkit-scrollbar {
+  width: 6px;
+}
+
+.voice-dropdown::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.voice-dropdown::-webkit-scrollbar-thumb {
+  background: #e6ebf1;
+  border-radius: 10px;
+}
+
+.voice-dropdown::-webkit-scrollbar-thumb:hover {
+  background: #d3dbe5;
+}
+
+.voice-category {
+  padding: 12px 16px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--stripe-accent);
+  background: rgba(255, 255, 255, 0.98);
+  border-bottom: 1px solid var(--stripe-border);
+  position: sticky;
+  top: -8px;
+  z-index: 10;
+  backdrop-filter: blur(8px);
+}
+
+.voice-option {
+  padding: 10px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+  transition: all 100ms var(--ease-stripe);
+}
+
+.voice-option:hover {
+  background: #f6f9fc;
+}
+
+.voice-option.active {
+  background: rgba(99, 91, 255, 0.05);
+  border-left: 2px solid var(--stripe-accent);
+}
+
+.voice-option-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--stripe-text-primary);
+}
+
+.voice-option-tone {
+  font-size: 12px;
+  color: var(--stripe-text-secondary);
 }
 
 .dot {
@@ -489,7 +617,7 @@ h1, h2, h3, h4, h5, h6 {
   width: 80px;
   height: 80px;
   border-radius: 50%;
-  background: radial-gradient(circle at 30% 30%, var(--stripe-accent), #00d4ff);
+  background-color: #6a5bf3;
   box-shadow: 0 8px 32px rgba(99, 91, 255, 0.3);
   animation: float 6s ease-in-out infinite;
   margin-bottom: 8px;

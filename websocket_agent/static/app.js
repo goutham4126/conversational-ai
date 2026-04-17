@@ -6,6 +6,81 @@ let inputProcessorNode = null;
 let playbackProcessorNode = null;
 
 let currentSessionId = null;
+let currentVoice = 'Zephyr';
+
+// ── Voices Dataset ──────────────────────────────────────────────────────────
+const voicesData = [
+    {
+        category: "Core Voices",
+        voices: [
+            { id: "Zephyr", name: "Zephyr", tone: "Bright, Higher pitch" },
+            { id: "Puck", name: "Puck", tone: "Upbeat, Middle pitch" },
+            { id: "Charon", name: "Charon", tone: "Informative, Lower pitch" },
+            { id: "Kore", name: "Kore", tone: "Firm, Middle pitch" },
+            { id: "Fenrir", name: "Fenrir", tone: "Excitable, Lower middle pitch" }
+        ]
+    },
+    {
+        category: "Additional Voices",
+        voices: [
+            { id: "Leda", name: "Leda", tone: "Youthful, Higher pitch" },
+            { id: "Orus", name: "Orus", tone: "Firm, Lower middle pitch" },
+            { id: "Aoede", name: "Aoede", tone: "Breezy, Middle pitch" },
+            { id: "Callirrhoe", name: "Callirrhoe", tone: "Easy-going, Middle pitch" },
+            { id: "Autonoe", name: "Autonoe", tone: "Bright, Middle pitch" }
+        ]
+    },
+    {
+        category: "Deeper / Softer",
+        voices: [
+            { id: "Enceladus", name: "Enceladus", tone: "Breathy, Lower pitch" },
+            { id: "Iapetus", name: "Iapetus", tone: "Clear, Lower middle pitch" },
+            { id: "Umbriel", name: "Umbriel", tone: "Easy-going, Lower middle pitch" },
+            { id: "Algieba", name: "Algieba", tone: "Smooth, Lower pitch" },
+            { id: "Despina", name: "Despina", tone: "Smooth, Middle pitch" }
+        ]
+    },
+    {
+        category: "Clear / Informative",
+        voices: [
+            { id: "Erinome", name: "Erinome", tone: "Clear, Middle pitch" },
+            { id: "Rasalgethi", name: "Rasalgethi", tone: "Informative, Middle pitch" },
+            { id: "Sadaltager", name: "Sadaltager", tone: "Knowledgeable, Middle pitch" }
+        ]
+    },
+    {
+        category: "Strong Personality",
+        voices: [
+            { id: "Algenib", name: "Algenib", tone: "Gravelly, Lower pitch" },
+            { id: "Gacrux", name: "Gacrux", tone: "Mature, Middle pitch" },
+            { id: "Pulcherrima", name: "Pulcherrima", tone: "Forward, Middle pitch" },
+            { id: "Achird", name: "Achird", tone: "Friendly, Lower middle pitch" },
+            { id: "Zubenelgenubi", name: "Zubenelgenubi", tone: "Casual, Lower middle pitch" }
+        ]
+    },
+    {
+        category: "Expressive / Emotional",
+        voices: [
+            { id: "Vindemiatrix", name: "Vindemiatrix", tone: "Gentle, Middle pitch" },
+            { id: "Sadachbia", name: "Sadachbia", tone: "Lively, Lower pitch" },
+            { id: "Sulafat", name: "Sulafat", tone: "Warm, Middle pitch" }
+        ]
+    },
+    {
+        category: "Energetic / Bright",
+        voices: [
+            { id: "Laomedeia", name: "Laomedeia", tone: "Upbeat, Higher pitch" },
+            { id: "Achernar", name: "Achernar", tone: "Soft, Higher pitch" }
+        ]
+    },
+    {
+        category: "Balanced / Neutral",
+        voices: [
+            { id: "Alnilam", name: "Alnilam", tone: "Firm, Lower middle pitch" },
+            { id: "Schedar", name: "Schedar", tone: "Even, Lower middle pitch" }
+        ]
+    }
+];
 
 const micBtn = document.getElementById('micBtn');
 const statusText = document.getElementById('statusText');
@@ -22,6 +97,62 @@ const currentLatency = document.getElementById('currentLatency');
 const avgLatency = document.getElementById('avgLatency');
 const syncBtn = document.getElementById('syncBtn');
 const callingOverlay = document.getElementById('callingOverlay');
+const voiceTrigger = document.getElementById('voiceTrigger');
+const voiceDropdown = document.getElementById('voiceDropdown');
+const activeVoiceName = document.getElementById('activeVoiceName');
+const activeVoiceTone = document.getElementById('activeVoiceTone');
+const voiceSelectorContainer = document.querySelector('.voice-selector-container');
+
+// ── Custom Voice Selection Logic ────────────────────────────────────────────
+function initVoiceSelector() {
+    if (!voiceDropdown) return;
+    
+    voiceDropdown.innerHTML = '';
+    voicesData.forEach(group => {
+        const cat = document.createElement('div');
+        cat.className = 'voice-category';
+        cat.innerText = group.category;
+        voiceDropdown.appendChild(cat);
+        
+        group.voices.forEach(v => {
+            const opt = document.createElement('div');
+            opt.className = `voice-option ${currentVoice === v.id ? 'active' : ''}`;
+            opt.innerHTML = `
+                <span class="voice-option-name">${v.name}</span>
+                <span class="voice-option-tone">${v.tone}</span>
+            `;
+            opt.onclick = () => {
+                selectVoice(v.id);
+                toggleVoiceDropdown(false);
+            };
+            voiceDropdown.appendChild(opt);
+        });
+    });
+}
+
+function selectVoice(id) {
+    currentVoice = id;
+    const voiceObj = voicesData.flatMap(g => g.voices).find(v => v.id === id);
+    if (voiceObj) {
+        activeVoiceName.innerText = voiceObj.name;
+        initVoiceSelector(); // Refresh active state
+    }
+}
+
+function toggleVoiceDropdown(force) {
+    const isVisible = force !== undefined ? force : voiceDropdown.style.display === 'none';
+    voiceDropdown.style.display = isVisible ? 'block' : 'none';
+}
+
+if (voiceTrigger) {
+    voiceTrigger.onclick = (e) => {
+        e.stopPropagation();
+        toggleVoiceDropdown();
+    };
+}
+
+window.addEventListener('click', () => toggleVoiceDropdown(false));
+initVoiceSelector();
 
 let ringbackTone = null;
 
@@ -350,9 +481,9 @@ newChatBtn.onclick = () => {
             <h2>Conversational AI</h2>
             <p>Click start to begin a real-time voice conversation</p>
             <div class="feature-pills">
-                <div class="feature-pill">🎙️ Real-time Audio</div>
-                <div class="feature-pill">📝 Auto Transcription</div>
-                <div class="feature-pill">☁️ Cloud Backup</div>
+                <div class="feature-pill">Real-time Audio</div>
+                <div class="feature-pill">Auto Transcription</div>
+                <div class="feature-pill">Cloud Backup</div>
             </div>
         </div>
         `;
@@ -392,7 +523,14 @@ function flushPlayback() {
 
 function connectWebSocket() {
     console.log("Connecting to WebSocket...");
-    const url = currentSessionId ? `ws://${location.host}/ws/${currentSessionId}` : `ws://${location.host}/ws`;
+    const selectedVoice = currentVoice;
+    const baseUrl = currentSessionId ? `ws://${location.host}/ws/${currentSessionId}` : `ws://${location.host}/ws`;
+    const url = `${baseUrl}?voice=${selectedVoice}`;
+    console.log("[WS] Connecting to:", url);
+
+    // UI feedback: Show the selected voice in the status badge while connecting
+    if (connText) connText.innerText = `Connecting (${selectedVoice})...`;
+
     ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
 
@@ -493,6 +631,7 @@ async function startRecording() {
 
         micBtn.classList.add('active');
         statusText.innerText = 'End Call';
+        if (voiceSelectorContainer) voiceSelectorContainer.style.display = 'none';
         updateVisualizer(true);
     } catch (err) { console.error(err); }
 }
@@ -508,6 +647,7 @@ function stopRecording() {
 
     micBtn.classList.remove('active');
     statusText.innerText = 'Start Support Call';
+    if (voiceSelectorContainer) voiceSelectorContainer.style.display = 'flex';
     if (latencyInfo) latencyInfo.style.display = 'none';
     updateVisualizer(false);
 
