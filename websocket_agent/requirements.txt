@@ -7,3 +7,4 @@ google-auth
 pydantic
 python-dotenv
 mcp
+httpx

@@ -1,25 +1,124 @@
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*experimental.*")
+
 import asyncio
 import os
+import httpx
 import json
 import traceback
 import base64
+import re
 import io
+import wave
+import sqlite3
+import time
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.staticfiles import StaticFiles
 from google import genai
 from google.genai import types
 from google.oauth2 import service_account
 from dotenv import load_dotenv
-import sqlite3
-import time
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timedelta
 from google.cloud import storage
-import io
-import wave
 from google.adk.runners import InMemoryRunner
 from agent import summary_agent
+
+# Direct API Tool Implementations for Ultra-Low Latency (<350ms)
+BASE_API_URL = "https://insurance-api-471936962134.us-central1.run.app"
+# Persistent client for connection pooling
+shared_client = httpx.AsyncClient(
+    timeout=httpx.Timeout(10.0, connect=5.0),
+    limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+    follow_redirects=True
+)
+
+async def get_customer(email: str):
+    """Get basic customer details using their registered email address."""
+    log_event(Colors.CYAN, "🔌", f"Direct API: get_customer({email})")
+    start = time.time()
+    try:
+        response = await shared_client.get(f"{BASE_API_URL}/customer/{email}")
+        response.raise_for_status()
+        data = response.json()
+        log_event(Colors.GREEN, "✅", f"Direct API success in {int((time.time()-start)*1000)}ms")
+        return data
+    except Exception as e:
+        log_event(Colors.RED, "❌", f"Direct API Error: {e}")
+        return {"error": str(e)}
+
+async def get_claim(claim_number: str):
+    """Retrieve specific claim details and status by claim number."""
+    log_event(Colors.CYAN, "🔌", f"Direct API: get_claim({claim_number})")
+    start = time.time()
+    try:
+        response = await shared_client.get(f"{BASE_API_URL}/claim/{claim_number}")
+        response.raise_for_status()
+        data = response.json()
+        log_event(Colors.GREEN, "✅", f"Direct API success in {int((time.time()-start)*1000)}ms")
+        return data
+    except Exception as e:
+        log_event(Colors.RED, "❌", f"Direct API Error: {e}")
+        return {"error": str(e)}
+
+async def get_full_details(email: str):
+    """Get comprehensive insurance details including policies, all claims, and history for a customer."""
+    log_event(Colors.CYAN, "🔌", f"Direct API: get_full_details({email})")
+    start = time.time()
+    try:
+        response = await shared_client.get(f"{BASE_API_URL}/full-details/{email}")
+        response.raise_for_status()
+        data = response.json()
+        log_event(Colors.GREEN, "✅", f"Direct API success in {int((time.time()-start)*1000)}ms")
+        return data
+    except Exception as e:
+        log_event(Colors.RED, "❌", f"Direct API Error: {e}")
+        return {"error": str(e)}
+
+def flush_buffer_sync(sender, text, audio_data, session_id):
+    """Sync version of flush_buffer to be run in a background thread."""
+    if not text.strip(): return
+    
+    audio_path = None
+    timestamp = int(datetime.now().timestamp() * 1000)
+    
+    # Save relevant audio to GCS
+    if audio_data:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        blob_path = f"{date_str}/{session_id}/{sender.lower()}_{timestamp}.wav"
+        
+        bucket = get_gcs_bucket()
+        if bucket:
+            try:
+                out_io = io.BytesIO()
+                with wave.open(out_io, 'wb') as wav_file:
+                    wav_file.setnchannels(1)
+                    wav_file.setsampwidth(2)
+                    wav_file.setframerate(24000 if sender == "Assistant" else 16000)
+                    wav_file.writeframes(audio_data)
+                
+                blob = bucket.blob(blob_path)
+                out_io.seek(0)
+                blob.upload_from_file(out_io, content_type="audio/wav")
+                audio_path = f"gcs://{GCS_BUCKET_NAME}/{blob_path}"
+                log_event(Colors.GREEN, "☁️", f"Uploaded {sender} audio to GCS (BG Thread)")
+            except Exception as e:
+                log_event(Colors.RED, "❌", f"GCS Upload Error: {e}")
+
+    # Save to Database
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("INSERT INTO messages (session_id, sender, text, created_at, audio_path) VALUES (?, ?, ?, ?, ?)",
+                  (session_id, sender, text.strip(), datetime.now().isoformat(), audio_path))
+        conn.commit()
+        conn.close()
+        log_event(Colors.MAGENTA, "💾", f"Saved {sender} turn to DB (BG Thread)")
+    except Exception as e:
+        log_event(Colors.RED, "❌", f"DB Save Error: {e}")
+
 
 load_dotenv()
 
@@ -152,8 +251,8 @@ CONFIG = types.LiveConnectConfig(
             disabled=False,  # Keep VAD on
             start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,  # Less trigger-happy
             end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,        # Wait longer before cutting off
-            prefix_padding_ms=300,      # ms of audio required before speech is confirmed
-            silence_duration_ms=1000,   # ms of silence before turn is considered done
+            prefix_padding_ms=200,      # ms of audio required before speech is confirmed
+            silence_duration_ms=300,    # REDUCED TO 300ms for ultra-low latency
         )
     ),
     input_audio_transcription=types.AudioTranscriptionConfig(language_codes=[
@@ -171,135 +270,51 @@ CONFIG = types.LiveConnectConfig(
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     IDENTITY & SCOPE
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    - You work exclusively for an insurance company.
-    - You ONLY handle insurance-related topics:
-    - Claim status, filing, and updates
-    - Policy details, renewals, and cancellations
-    - Premium payments and due dates
-    - Coverage questions and eligibility
-    - Adding/removing beneficiaries or nominees
-    - Document submission and verification
-    - Grievance registration and escalation
-    - Emergency claim assistance
-
-    - If a user asks ANYTHING outside insurance (e.g., weather, jokes, general knowledge, coding, politics, personal advice):
-    → Respond warmly but firmly: 
-    "I'm specifically trained to help you with insurance-related matters only. Is there anything about your policy or claim I can help you with today?"
-    → Never engage with off-topic content, even partially.
+    - You work exclusively for an insurance company handling:
+    - Claim status, policies, premium payments, and coverage details.
+    - Adding beneficiaries or document verification.
+    - If a user asks ANYTHING outside insurance (e.g., weather, politics, jokes):
+    → Respond: "I'm specifically trained to help you with insurance-related matters only."
+    → Never engage with off-topic content.
 
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     LANGUAGE BEHAVIOR
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    - Always BEGIN every conversation in clear, professional English.
-    - STRICTLY match the customer's language. Never switch languages unless the user is clearly and predominantly speaking a different one.
-    - If the user is speaking English, you MUST respond in English.
+    - Always BEGIN in clear, professional English.
+    - STRICTLY match the customer's language once they speak.
     - Only switch to Hindi, Tamil, or Telugu if the user has spoken a complete sentence in that language.
-    - Once you detect a language shift, maintain it, but if the user switches back to English, you MUST immediately switch back to English as well.
-    - NEVER switch to a different language randomly or based on a single word.
-    - If you are unsure of the user's language or if their speech was garbled, default to English.
-    - Avoid "language drifting"—stay disciplined to the user's chosen language.
-
+    - If you are unsure of the user's language, default to English.
 
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     EMOTIONAL INTELLIGENCE PROTOCOL
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    Continuously analyze vocal cues, pacing, word choice, and tone. Respond to emotional states as follows:
-
-    ANGRY / FRUSTRATED CUSTOMER:
-    - NEVER argue back or become defensive.
-    - First response must ALWAYS be an acknowledgment, never a solution:
-    "I completely understand how frustrating this must be for you, and I sincerely apologize for the inconvenience."
-    - Lower your own speaking pace. Use a calm, steady tone.
-    - Validate their feeling before offering any solution.
-    - If anger escalates: "I want to make sure this is resolved for you properly. Let me escalate this to a senior specialist right away."
-    - Never say "calm down" — it escalates anger.
-
-    ANXIOUS / WORRIED CUSTOMER:
-    - Use reassuring language: "You're in safe hands.", "This is completely normal and we'll sort it out together."
-    - Break down steps clearly — anxious customers need structure.
-    - Avoid long pauses or uncertain language like "I think" or "maybe."
-
-    NEUTRAL / CALM CUSTOMER:
-    - Be professional, warm, and efficient.
-    - Don't over-explain — match their pace.
-
-    GRIEVING / DISTRESSED CUSTOMER (e.g., death claim):
-    - Speak with exceptional softness and zero urgency.
-    - Open with: "I'm so sorry for your loss. Please take your time — I'm here to help you through this."
-    - Never rush documentation steps. Offer to call back if needed.
-    - Prioritize human connection over process efficiency.
-
-    HAPPY / SATISFIED CUSTOMER:
-    - Match their positive energy warmly but professionally.
-    - Celebrate small wins: "Great news — your claim has been approved!"
+    - ANGRY: NEVER argue. Acknowledge frustration first: "I completely understand how frustrating this must be..."
+    - ANXIOUS: Use reassuring language: "You're in safe hands." / "We'll sort it out together."
+    - GRIEVING: Speak with exceptional softness and zero urgency. Open with: "I'm so sorry for your loss."
+    - HAPPY: Match their positive energy warmly but professionally.
 
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     ANTI-HALLUCINATION RULES (CRITICAL)
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    - NEVER invent policy numbers, claim statuses, amounts, dates, or coverage details.
-    - If you do not have access to the customer's specific data, say clearly:
-    "I don't have your account details in front of me right now. Could you please provide your policy number so I can look into this accurately?"
-    - NEVER guess or approximate: "Your claim might be around ₹50,000" — this is strictly forbidden.
-    - If a system lookup is needed but unavailable, say: "Let me flag this for our team to verify and get back to you within [X hours/days]."
-    - Acknowledge uncertainty honestly: "I want to give you accurate information — let me confirm this rather than guessing."
-    - Do NOT make up process timelines unless they are standard policy (e.g., "Claims are typically processed in 7-10 business days as per standard policy").
+    - NEVER invent policy numbers, claim statuses, amounts, or dates.
+    - ALWAYS use tools to verify real data. 
+    - Tools available: `get_claim(claim_number)`, `get_customer(email)`, `get_full_details(email)`.
+    - If data is missing after tool call, inform user and ask for the missing detail.
 
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     CONVERSATION STRUCTURE
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    1. GREETING (always warm, always English first):
-    "Hello! Thank you for calling us. I'm your insurance assistant. How may I help you today?"
-
-    2. IDENTIFICATION (when needed):
-    "May I have your policy number or registered mobile number to access your details?"
-
-    3. ACTIVE LISTENING:
-    - Never interrupt unless the customer is clearly done speaking.
-    - Use verbal nods: "I understand.", "Of course.", "Go on, I'm listening."
-    - Summarize back: "So just to confirm, you're enquiring about the status of your health claim filed on [date] — is that right?"
-
-    4. RESOLUTION:
-    - Give clear, step-by-step guidance.
-    - Confirm understanding: "Does that make sense?" / "Shall I repeat any part of that?"
-
-    5. ESCALATION (when you cannot resolve):
-    "I want to make sure this is handled correctly. I'm going to connect you with a senior specialist who can access your full account details. Please stay on the line."
-
-    6. CLOSING:
-    "Is there anything else I can help you with regarding your insurance today?"
-    "Thank you for calling us. Have a great day, and please don't hesitate to reach out if you need us."
-
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    GUARDRAILS & EDGE CASES
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    - If customer uses abusive language → Respond calmly: "I understand you're upset, and I truly want to help. I do need us to have a respectful conversation to resolve this for you."
-    - If customer asks you to "pretend" or "roleplay" as something else → Decline: "I'm your insurance assistant, and I'm here specifically to help with your insurance needs."
-    - If customer asks for a human agent → Always honor: "Of course, let me connect you to one of our human specialists right away."
-    - If customer goes silent for too long → Gently check in: "Hello? I'm still here if you need a moment."
-    - If customer provides incorrect details → Politely flag: "The details you've provided don't seem to match our records. Could we try your registered mobile number or email instead?"
-    - Never share other customers' data or confirm any PII not provided by the current caller.
-    - Never make promises outside company policy (e.g., "I guarantee approval").
+    1. GREETING: "Hello! Thank you for calling us. I'm your insurance assistant. How may I help you today?"
+    2. IDENTIFICATION: "May I have your policy number or registered mobile number?"
+    3. RESOLUTION: Give clear, step-by-step guidance. Confirm understanding.
+    4. CLOSING: "Is there anything else I can help you with regarding your insurance today?"
 
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     TONE & VOICE PERSONALITY
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    - Professional yet warm — like a knowledgeable friend, not a cold bot.
-    - Confident but never arrogant.
-    - Patient with elderly or confused customers — repeat without frustration.
-    - Concise — avoid rambling. One clear idea per sentence when speaking.
-    - Never use filler phrases like "Great question!" or "Absolutely!" repeatedly — it sounds robotic.
-
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    VOICE INTERACTION & VOCABULARY
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    - You are an insurance agent. Prioritize recognizing these terms accurately even when they sound ambiguous:
-      - "Policy Number" (Can sound like: "Parcel number", "Please number", "A parcel number")
-      - "Claim Number" (Can sound like: "Clean number", "Clown number")
-      - "Beneficiary" (Can sound like: "Benefits", "Fishary")
-      - "Deductible" (Can sound like: "The duct table")
-    - Always interpret the user's intent through the lens of insurance. If they say something that sounds like "Parcel P 017", assume they mean "Policy P 017" because they are talking to an insurance bot.
-    - You support barge-in. If the user interrupts you, stop speaking immediately and listen.
-    - Confirm critical numbers (Policy/Claim) back to the user to ensure accuracy.
+    - Professional yet warm — like a knowledgeable friend.
+    - Concise — avoid rambling. One clear idea per sentence.
+    - You support barge-in. If the user interrupts, stop immediately and listen.
     """)]))
 
 @app.get("/")
@@ -565,7 +580,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
         output_audio_transcription=CONFIG.output_audio_transcription,
         system_instruction=types.Content(parts=[
             types.Part.from_text(text=base_instruction + history_block)
-        ])
+        ]),
+        tools=[get_customer, get_claim, get_full_details]
     )
     # ──────────────────────────────────────────────────────────────────────
 
@@ -573,7 +589,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
     if stored_summary:
         log_event(Colors.CYAN, "📋", f"Injected post-call summary as context: {stored_summary.get('title', 'N/A')}")
 
-    out_queue = asyncio.Queue(maxsize=10)
+    out_queue = asyncio.Queue(maxsize=100)
     
     # Stats tracking
     stats = {
@@ -661,86 +677,79 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                 user_transcript_buffer = ""
                 assistant_transcript_buffer = ""
                 
-                # Latency tracking state
+                # Latency tracking & Speculative state
                 last_user_word_time = 0
                 first_agent_word_received = False
                 latencies = []
+                # Speculative tool cache: { (tool_name, id): asyncio.Task }
+                speculative_cache = {}
 
-
-                def flush_buffer(sender, text):
-                    nonlocal user_audio_turn_buffer, assistant_audio_turn_buffer
-                    if not text.strip(): return
+                async def speculative_fetch(tool_name, arg_name, arg_val):
+                    key = (tool_name, arg_val)
+                    if key in speculative_cache:
+                        return
                     
-                    audio_path = None
-                    timestamp = int(time.time() * 1000)
-                    
-                    # Save relevant audio
-                    if sender == "User" and user_audio_turn_buffer:
-                        # Upload to GCS
-                        date_str = datetime.now().strftime("%Y-%m-%d")
-                        blob_path = f"{date_str}/{session_id}/{sender.lower()}_{timestamp}.wav"
-                        
-                        if gcs_bucket:
-                            try:
-                                # Create WAV in memory
-                                out_io = io.BytesIO()
-                                with wave.open(out_io, 'wb') as wav_file:
-                                    wav_file.setnchannels(1)
-                                    wav_file.setsampwidth(2)
-                                    wav_file.setframerate(16000)
-                                    wav_file.writeframes(bytes(user_audio_turn_buffer))
-                                
-                                blob = gcs_bucket.blob(blob_path)
-                                out_io.seek(0)
-                                blob.upload_from_file(out_io, content_type="audio/wav")
-                                audio_path = f"gcs://{GCS_BUCKET_NAME}/{blob_path}"
-                                log_event(Colors.GREEN, "☁️", f"Uploaded User audio to GCS: {blob_path}")
-                            except Exception as e:
-                                log_event(Colors.RED, "❌", f"GCS Upload Error: {e}")
-                        
-                        user_audio_turn_buffer = bytearray()
-
-                    elif sender == "Assistant" and assistant_audio_turn_buffer:
-                        # Upload to GCS
-                        date_str = datetime.now().strftime("%Y-%m-%d")
-                        blob_path = f"{date_str}/{session_id}/{sender.lower()}_{timestamp}.wav"
-                        
-                        if gcs_bucket:
-                            try:
-                                # Create WAV in memory
-                                out_io = io.BytesIO()
-                                with wave.open(out_io, 'wb') as wav_file:
-                                    wav_file.setnchannels(1)
-                                    wav_file.setsampwidth(2)
-                                    wav_file.setframerate(24000)
-                                    wav_file.writeframes(bytes(assistant_audio_turn_buffer))
-                                
-                                blob = gcs_bucket.blob(blob_path)
-                                out_io.seek(0)
-                                blob.upload_from_file(out_io, content_type="audio/wav")
-                                audio_path = f"gcs://{GCS_BUCKET_NAME}/{blob_path}"
-                                log_event(Colors.GREEN, "☁️", f"Uploaded Assistant audio to GCS: {blob_path}")
-                            except Exception as e:
-                                log_event(Colors.RED, "❌", f"GCS Upload Error: {e}")
-
-                        assistant_audio_turn_buffer = bytearray()
-
-                    log_event(Colors.BOLD + Colors.MAGENTA, "💾", f"Saving {sender} turn to DB (Audio: {'YES' if audio_path else 'NO'})")
-                    try:
-                        conn = sqlite3.connect(DB_PATH)
-                        c = conn.cursor()
-                        # Only add leading slash for local paths, not GCS
-                        db_audio_path = audio_path if audio_path else None
-                        c.execute("INSERT INTO messages (session_id, sender, text, created_at, audio_path) VALUES (?, ?, ?, ?, ?)",
-                                  (session_id, sender, text.strip(), datetime.now().isoformat(), db_audio_path))
-                        conn.commit()
-                        conn.close()
-                    except Exception as e:
-                        log_event(Colors.RED, "❌", f"DB Save Error: {e}")
+                    log_event(Colors.CYAN, "🚀", f"Speculative Fetch: {tool_name}({arg_val}) started while user is speaking...")
+                    tool_func = tool_map.get(tool_name)
+                    if tool_func:
+                        # Create task and store in cache
+                        task = asyncio.create_task(tool_func(**{arg_name: arg_val}))
+                        speculative_cache[key] = task
+                        try:
+                            await task
+                            log_event(Colors.CYAN, "✨", f"Speculative Fetch: {tool_name}({arg_val}) completed and cached.")
+                        except Exception as e:
+                            log_event(Colors.RED, "⚠️", f"Speculative Fetch failed for {arg_val}: {e}")
 
                 try:
                     while True:
+                        tool_map = {
+                            "get_customer": get_customer,
+                            "get_claim": get_claim,
+                            "get_full_details": get_full_details
+                        }
                         async for response in session.receive():
+                            # 0. Handle Tool Calls
+                            if response.tool_call:
+                                log_event(Colors.YELLOW, "🛠️", f"Gemini requested tools: {[fc.name for fc in response.tool_call.function_calls]}")
+                                function_responses = []
+                                for fc in response.tool_call.function_calls:
+                                    tool_func = tool_map.get(fc.name)
+                                    if tool_func:
+                                        try:
+                                            # Check speculative cache
+                                            arg_val = next(iter(fc.args.values())) if fc.args else None
+                                            key = (fc.name, arg_val)
+                                            
+                                            if key in speculative_cache:
+                                                log_event(Colors.GREEN + Colors.BOLD, "⚡", f"INSTANT RESPONSE: Using cached speculative result for {fc.name}({arg_val})")
+                                                result = await speculative_cache[key]
+                                            else:
+                                                log_event(Colors.YELLOW, "⏳", f"Tool {fc.name} not in speculative cache, calling now...")
+                                                result = await tool_func(**fc.args)
+
+                                            function_responses.append(
+                                                types.FunctionResponse(
+                                                    name=fc.name,
+                                                    id=fc.id,
+                                                    response=result
+                                                )
+                                            )
+                                            log_event(Colors.GREEN, "✅", f"Tool {fc.name} result obtained.")
+                                        except Exception as tool_err:
+                                            log_event(Colors.RED, "❌", f"Tool {fc.name} error: {tool_err}")
+                                            function_responses.append(
+                                                types.FunctionResponse(
+                                                    name=fc.name,
+                                                    id=fc.id,
+                                                    response={"error": str(tool_err)}
+                                                )
+                                            )
+                                
+                                if function_responses:
+                                    await session.send(input=types.LiveClientToolResponse(function_responses=function_responses))
+                                continue
+
                             server_content = response.server_content
                             
                             is_interrupted = getattr(response, 'interrupted', False) or (
@@ -750,9 +759,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                             if is_interrupted:
                                 log_event(Colors.RED + Colors.BOLD, "🛑", "Assistant Interrupted (Barge-in)")
                                 if assistant_transcript_buffer:
-                                    flush_buffer("Assistant", assistant_transcript_buffer + " [Interrupted]")
+                                    audio_copy = bytes(assistant_audio_turn_buffer)
+                                    assistant_audio_turn_buffer.clear()
+                                    asyncio.create_task(asyncio.to_thread(flush_buffer_sync, "Assistant", assistant_transcript_buffer + " [Interrupted]", audio_copy, session_id))
                                     assistant_transcript_buffer = ""
-                                user_audio_turn_buffer = bytearray() # Reset user audio too on interrupt usually
+                                user_audio_turn_buffer = bytearray() 
                                 assistant_audio_turn_buffer = bytearray()
                                 await websocket.send_text(json.dumps({"type": "clear_audio_queue"}))
                                 continue
@@ -765,6 +776,21 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                                 chunk = server_content.input_transcription.text
                                 if chunk:
                                     user_transcript_buffer += chunk
+                                    
+                                    # --- Speculative Engine ---
+                                    # Look for Claim IDs: CL-105 or CL105
+                                    claim_matches = re.findall(r"(?:CL-?\d+)", user_transcript_buffer, re.IGNORECASE)
+                                    for mid in claim_matches:
+                                        asyncio.create_task(speculative_fetch("get_claim", "claim_number", mid.upper()))
+                                    
+                                    # Look for Emails
+                                    email_matches = re.findall(r"[\w\.-]+@[\w\.-]+\.\w+", user_transcript_buffer)
+                                    for email in email_matches:
+                                        # Speculatively fetch both customer and full details for emails
+                                        asyncio.create_task(speculative_fetch("get_customer", "email", email.lower()))
+                                        asyncio.create_task(speculative_fetch("get_full_details", "email", email.lower()))
+                                    # --------------------------
+
                                     await websocket.send_text(json.dumps({
                                         "type": "transcript", "sender": "User", "text": chunk
                                     }))
@@ -806,14 +832,18 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
 
                             # 4. Handle Turn Completion (Commit to DB)
                             if server_content.turn_complete:
-                                first_agent_word_received = False # Reset for next turn
+                                first_agent_word_received = False 
                                 if user_transcript_buffer:
-                                    flush_buffer("User", user_transcript_buffer)
+                                    audio_copy = bytes(user_audio_turn_buffer)
+                                    user_audio_turn_buffer.clear()
+                                    asyncio.create_task(asyncio.to_thread(flush_buffer_sync, "User", user_transcript_buffer, audio_copy, session_id))
                                     user_transcript_buffer = ""
                                 if assistant_transcript_buffer:
-                                    flush_buffer("Assistant", assistant_transcript_buffer)
+                                    audio_copy = bytes(assistant_audio_turn_buffer)
+                                    assistant_audio_turn_buffer.clear()
+                                    asyncio.create_task(asyncio.to_thread(flush_buffer_sync, "Assistant", assistant_transcript_buffer, audio_copy, session_id))
                                     assistant_transcript_buffer = ""
-                                # Reset buffers just in case
+                                    
                                 user_audio_turn_buffer = bytearray()
                                 assistant_audio_turn_buffer = bytearray()
 
@@ -825,14 +855,23 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                         log_event(Colors.RED, "❌", f"Model receive error: {e}")
                         traceback.print_exc()
 
-            await asyncio.wait(
-                [
-                    asyncio.create_task(receive_from_browser()),
-                    asyncio.create_task(send_realtime()),
-                    asyncio.create_task(receive_from_model())
-                ],
-                return_when=asyncio.FIRST_COMPLETED
-            )
+            # Use list of tasks to ensure clean cleanup
+            tasks = [
+                asyncio.create_task(receive_from_browser()),
+                asyncio.create_task(send_realtime()),
+                asyncio.create_task(receive_from_model())
+            ]
+            
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            
+            # Cancel pending tasks to avoid "Task destroyed but pending" warnings
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
             
     except Exception:
         traceback.print_exc()

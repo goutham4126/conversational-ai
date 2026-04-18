@@ -106,14 +106,14 @@ const voiceSelectorContainer = document.querySelector('.voice-selector-container
 // ── Custom Voice Selection Logic ────────────────────────────────────────────
 function initVoiceSelector() {
     if (!voiceDropdown) return;
-    
+
     voiceDropdown.innerHTML = '';
     voicesData.forEach(group => {
         const cat = document.createElement('div');
         cat.className = 'voice-category';
         cat.innerText = group.category;
         voiceDropdown.appendChild(cat);
-        
+
         group.voices.forEach(v => {
             const opt = document.createElement('div');
             opt.className = `voice-option ${currentVoice === v.id ? 'active' : ''}`;
@@ -279,7 +279,7 @@ function appendMessage(sender, text, isHistory = false, audioPath = null) {
             playBtn.className = 'audio-play-btn';
             playBtn.innerHTML = icons.play;
             playBtn.onclick = () => playAudio(playBtn, audioPath);
-            
+
             const waveforms = document.createElement('div');
             waveforms.className = 'audio-waveforms';
             for (let i = 0; i < 20; i++) {
@@ -292,7 +292,7 @@ function appendMessage(sender, text, isHistory = false, audioPath = null) {
             const durationLabel = document.createElement('span');
             durationLabel.className = 'audio-duration';
             durationLabel.innerText = '...';
-            
+
             // Fetch duration
             const tempAudio = new Audio(audioPath);
             tempAudio.onloadedmetadata = () => {
@@ -583,7 +583,7 @@ function connectWebSocket() {
                 // As soon as we get the first transcript or response, stop the ringing
                 if (callingOverlay) callingOverlay.style.display = 'none';
                 if (ringbackTone) ringbackTone.stop();
-                
+
                 appendMessage(data.sender, data.text);
             } else if (data.type === 'latency') {
                 if (latencyInfo) {
@@ -669,7 +669,7 @@ micBtn.onclick = () => {
 
 async function syncFromCloud() {
     if (!currentSessionId || !syncBtn) return;
-    
+
     syncBtn.classList.add('syncing');
     try {
         const response = await fetch(`/api/sessions/${currentSessionId}/sync`, { method: 'POST' });
