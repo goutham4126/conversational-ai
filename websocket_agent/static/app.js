@@ -1,12 +1,11 @@
 let ws = null;
-let inputContext = null;
-let outputContext = null;
-let mediaStream = null;
 let inputProcessorNode = null;
 let playbackProcessorNode = null;
+let audioContext = null;
 
 let currentSessionId = null;
 let currentVoice = 'Zephyr';
+let agentOpeningComplete = false;
 
 // ── Voices Dataset ──────────────────────────────────────────────────────────
 const voicesData = [
@@ -210,6 +209,29 @@ class RingbackTone {
     }
 }
 
+// ── Eager Initialization logic ──────────────────────────────────────────────
+async function ensureAudioContexts() {
+    if (!audioContext) {
+        console.log("[Audio] Eagerly initializing unified audio context...");
+        // Use 24kHz as the base as it's the model's output rate. Browsers will resample input to this.
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+        
+        await audioContext.audioWorklet.addModule('/static/playback-processor.js');
+        await audioContext.audioWorklet.addModule('/static/pcm-processor.js');
+        
+        playbackProcessorNode = new AudioWorkletNode(audioContext, 'playback-processor');
+        playbackProcessorNode.connect(audioContext.destination);
+    }
+
+    if (audioContext.state === 'suspended') await audioContext.resume();
+    console.log("[Audio] Unified context ready at 24kHz.");
+}
+
+// Use a one-time click listener to unlock AudioContext early
+window.addEventListener('click', () => {
+    ensureAudioContexts().catch(console.error);
+}, { once: true });
+
 let currentSender = null;
 let currentMessageContentDiv = null;
 let visualizerInterval = null;
@@ -248,7 +270,7 @@ function updateVisualizer(active) {
     }, 80);
 }
 
-function appendMessage(sender, text, isHistory = false, audioPath = null) {
+function appendMessage(sender, text, isHistory = false, audioPath = null, msg = {}) {
     // Clear welcome screen if it exists
     if (transcriptArea.querySelector('.welcome-screen')) {
         transcriptArea.innerHTML = '';
@@ -291,14 +313,19 @@ function appendMessage(sender, text, isHistory = false, audioPath = null) {
 
             const durationLabel = document.createElement('span');
             durationLabel.className = 'audio-duration';
-            durationLabel.innerText = '...';
-
-            // Fetch duration
-            const tempAudio = new Audio(audioPath);
-            tempAudio.onloadedmetadata = () => {
-                const secs = Math.round(tempAudio.duration);
+            
+            // Use server-provided duration if available, otherwise show placeholder
+            if (msg.duration_ms) {
+                const secs = Math.round(msg.duration_ms / 1000);
                 durationLabel.innerText = `${secs}s`;
-            };
+            } else {
+                durationLabel.innerText = '...';
+                // Fallback for new messages where duration isn't in the object yet
+                const tempAudio = new Audio(audioPath);
+                tempAudio.onloadedmetadata = () => {
+                    durationLabel.innerText = `${Math.round(tempAudio.duration)}s`;
+                };
+            }
 
             audioActionContainer.appendChild(playBtn);
             audioActionContainer.appendChild(waveforms);
@@ -409,7 +436,7 @@ async function selectSession(id) {
                     <p>Start a call to begin talking in this session.</p>
                 </div>`;
         } else {
-            messages.forEach(msg => appendMessage(msg.sender, msg.text, true, msg.audio_path));
+            messages.forEach(msg => appendMessage(msg.sender, msg.text, true, msg.audio_path, msg));
         }
 
         // Restore cached summary if available
@@ -574,6 +601,9 @@ function connectWebSocket() {
                 // Server tells us the real session id (critical for new sessions)
                 currentSessionId = data.session_id;
                 console.log('[WS] Session ID received from server:', currentSessionId);
+            } else if (data.type === 'greeting_complete') {
+                agentOpeningComplete = true;
+                console.log('[Audio] AI Greeting finished. User microphone transmission enabled.');
             } else if (data.type === 'clear_audio_queue') {
                 flushPlayback();
                 // When interrupted, ensure next AI response starts a new bubble
@@ -603,31 +633,30 @@ function connectWebSocket() {
 }
 
 async function startRecording() {
-    if (!outputContext) {
-        outputContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-        await outputContext.audioWorklet.addModule('/static/playback-processor.js');
-        playbackProcessorNode = new AudioWorkletNode(outputContext, 'playback-processor');
-        playbackProcessorNode.connect(outputContext.destination);
-    }
-    if (!inputContext) {
-        inputContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-        await inputContext.audioWorklet.addModule('/static/pcm-processor.js');
-    }
-
-    if (outputContext.state === 'suspended') await outputContext.resume();
-    if (inputContext.state === 'suspended') await inputContext.resume();
+    await ensureAudioContexts();
 
     try {
-        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const source = inputContext.createMediaStreamSource(mediaStream);
+        const constraints = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                channelCount: 1,
+                sampleRate: 24000
+            }
+        };
+        mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+        const source = audioContext.createMediaStreamSource(mediaStream);
 
-        inputProcessorNode = new AudioWorkletNode(inputContext, 'pcm-processor');
+        inputProcessorNode = new AudioWorkletNode(audioContext, 'pcm-processor');
         inputProcessorNode.port.onmessage = (e) => {
-            if (ws && ws.readyState === WebSocket.OPEN) ws.send(e.data.buffer);
+            if (ws && ws.readyState === WebSocket.OPEN && agentOpeningComplete) {
+                ws.send(e.data.buffer);
+            }
         };
 
         source.connect(inputProcessorNode);
-        inputProcessorNode.connect(inputContext.destination);
+        inputProcessorNode.connect(audioContext.destination);
 
         micBtn.classList.add('active');
         statusText.innerText = 'End Call';
@@ -638,12 +667,12 @@ async function startRecording() {
 
 function stopRecording() {
     flushPlayback();
+    agentOpeningComplete = false;
 
     if (inputProcessorNode) { inputProcessorNode.disconnect(); inputProcessorNode = null; }
     if (mediaStream) { mediaStream.getTracks().forEach(track => track.stop()); mediaStream = null; }
 
-    if (inputContext) inputContext.suspend();
-    if (outputContext) outputContext.suspend();
+    if (audioContext) audioContext.suspend();
 
     micBtn.classList.remove('active');
     statusText.innerText = 'Start Support Call';
