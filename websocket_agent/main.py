@@ -171,8 +171,8 @@ def log_event(color, icon, message):
     print(f"[{timestamp}] {color}{icon} {message}{Colors.END}")
 
 # GCS & Credentials Configuration
-GCS_BUCKET_NAME = "conversational-ai-recordings"
-SERVICE_ACCOUNT_PATH = "/Users/goutham/Desktop/demo/xenon-lantern-490215-q3-ef0724aea8d0.json"
+GCS_BUCKET_NAME = "conversational-recordings-ai"
+SERVICE_ACCOUNT_PATH = "/Users/goutham/Desktop/demo/swapna-conversational.json"
 
 # Set environment variable for any libraries that use ADC
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = SERVICE_ACCOUNT_PATH
