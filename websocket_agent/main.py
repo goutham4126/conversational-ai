@@ -394,13 +394,26 @@ CONFIG = types.LiveConnectConfig(
     - Never repeat the same phrase twice in the same conversation (e.g., avoid saying "Absolutely!" every turn).
 
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    DYNAMIC PERSONALITY & VARIETY
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    - NEVER start a conversation with the exact same greeting twice. 
+    - Vary your openers based on time of day, vibe, or context. Use phrases like:
+      "Good day! How can I assist you with your insurance today?"
+      "Hi there! I'm here to help with any claim or policy questions you might have."
+      "Hello! Thanks for calling in. What can I do for you today?"
+    - NEVER use a robotic "Is there anything else?" loop. If the user is done, close the call warmly and uniquely.
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     FILLER & LATENCY PROTOCOL
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    - When you need to use a tool (fetch details/claims), DO NOT remain silent.
-    - IMMEDIATELY use a natural filler phrase while the tool is loading:
-      "One moment while I search for that claim...", "Let me pull up your account details...", 
-      "Just a second, I'm checking our database...", etc.
-    - Never let more than 500ms of silence pass once you've decided to use a tool.
+    - When initiating a tool call (checking claims/details), you MUST say a quick filler FIRST.
+    - Example: "Sure, let me check that claim for you..." or "One moment, pulling up your records..."
+    - The filler must be a COMPLETE, SHORT sentence that ends before you send the tool call block.
+    - CRITICAL: Never combine a filler and a final answer in the same turn. They must be separate thoughts.
+    - This allows the user to hear you acknowledge the request while the data loads.
+
+
+
     """)]))
 
 
@@ -723,18 +736,23 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
         async with client.aio.live.connect(model=MODEL_NAME, config=session_config) as session:
             log_event(Colors.GREEN, "✨", f"Connected to Gemini Live API ({MODEL_NAME})")
             
+            # 🕒 Inject current local time for accurate greetings
+            current_time_str = datetime.now().strftime("%I:%M %p")
+            
             if stored_summary:
                 initial_prompt = (
-                    f"[BEGIN CALL] Greet the returning customer warmly. "
-                    f"Acknowledge that you previously helped them with '{stored_summary.get('title', 'their insurance policy')}' "
-                    f"and invite them to continue. Keep it brief, natural, and professional."
+                    f"You are a warm, professional insurance assistant. The current time is {current_time_str}. "
+                    f"A customer is returning to follow up on '{stored_summary.get('title', 'their previous inquiry')}'. "
+                    f"Choose a UNIQUE, time-appropriate greeting (e.g., Good Afternoon/Evening/etc) and invite them to continue."
                 )
             else:
                 initial_prompt = (
-                    "[BEGIN CALL] You are an insurance voice agent. "
-                    "Deliver your opening greeting now, speaking directly to the customer as if the call just connected. "
-                    "Be warm, professional, and brief."
+                    f"You are a helpful insurance voice agent. The current time is {current_time_str}. "
+                    "The call has just connected. Start with a UNIQUE, warm, and time-appropriate greeting. "
+                    "Introduce yourself and ask how you can help."
                 )
+
+
 
             await session.send(input=initial_prompt, end_of_turn=True)
             
@@ -842,13 +860,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                                     tool_func = tool_map.get(fc.name)
                                     if tool_func:
                                         try:
-                                            # Check speculative cache
                                             arg_val = next(iter(fc.args.values())) if fc.args else None
-                                            key = (fc.name, arg_val)
-                                            
-                                            if key in speculative_cache:
+                                            if (fc.name, arg_val) in speculative_cache:
                                                 log_event(Colors.GREEN + Colors.BOLD, "⚡", f"INSTANT RESPONSE: Using cached speculative result for {fc.name}({arg_val})")
-                                                result = await speculative_cache[key]
+                                                result = await speculative_cache[(fc.name, arg_val)]
+                                                # 🕒 Realism Delay: Wait a bit so the filler phrase can be heard
+                                                await asyncio.sleep(0.8)
+
                                             else:
                                                 log_event(Colors.YELLOW, "⏳", f"Tool {fc.name} not in speculative cache, calling now...")
                                                 result = await tool_func(**fc.args)
@@ -860,6 +878,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                                                     response=result
                                                 )
                                             )
+
                                             log_event(Colors.GREEN, "✅", f"Tool {fc.name} result obtained.")
                                         except Exception as tool_err:
                                             log_event(Colors.RED, "❌", f"Tool {fc.name} error: {tool_err}")
@@ -872,8 +891,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                                             )
                                 
                                 if function_responses:
+                                    # 🫧 Synchronization Delay: Wait for the filler audio/transcript to commit
+                                    await asyncio.sleep(0.5)
+                                    # 🫧 Bubble Break: Signal browser to start a new bubble for the data response
+                                    await websocket.send_text(json.dumps({"type": "new_bubble"}))
+                                    # 🚀 Give model a tiny bit of breath after the break
+                                    await asyncio.sleep(0.5)
                                     await session.send(input=types.LiveClientToolResponse(function_responses=function_responses))
                                 continue
+
+
 
                             server_content = response.server_content
                             
