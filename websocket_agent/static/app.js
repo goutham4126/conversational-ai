@@ -98,6 +98,14 @@ const currentLatency = document.getElementById('currentLatency');
 const avgLatency = document.getElementById('avgLatency');
 const syncBtn = document.getElementById('syncBtn');
 const callingOverlay = document.getElementById('callingOverlay');
+const ratingModal = document.getElementById('ratingModal');
+const starsContainer = document.getElementById('starsContainer');
+const skipRatingBtn = document.getElementById('skipRatingBtn');
+const submitRatingBtn = document.getElementById('submitRatingBtn');
+let lastRatedSessionId = null;
+let selectedRating = null;
+
+
 const voiceTrigger = document.getElementById('voiceTrigger');
 const voiceDropdown = document.getElementById('voiceDropdown');
 const activeVoiceName = document.getElementById('activeVoiceName');
@@ -158,7 +166,146 @@ initVoiceSelector();
 // RingbackTone removed for maximum speed
 
 
+// ── Rating Logic ──────────────────────────────────────────────────────────
+function showRatingModal(sessionId) {
+    if (!sessionId) {
+        console.warn('[Rating] No sessionId provided to showRatingModal');
+        return;
+    }
+    
+    // Lazy-select if the global reference is missing
+    const modal = ratingModal || document.getElementById('ratingModal');
+    const container = starsContainer || document.getElementById('starsContainer');
+    
+    if (!modal || !container) {
+        console.error('[Rating] Modal or Container elements not found in DOM!');
+        return;
+    }
+
+    lastRatedSessionId = sessionId;
+    selectedRating = null;
+    console.log('[Rating] Displaying modal for session:', sessionId);
+    
+    // Explicitly set display and z-index to ensure it shows above everything
+    modal.style.display = 'flex';
+    modal.style.zIndex = '10000';
+    
+    // Reset buttons
+    const submitBtn = document.getElementById('submitRatingBtn');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerText = 'Submit Rating';
+    }
+
+    // Clear previous stars
+    const stars = container.querySelectorAll('.star');
+    stars.forEach(s => {
+        s.classList.remove('active', 'hovered');
+    });
+}
+
+
+
+function closeRatingModal() {
+    ratingModal.style.display = 'none';
+    lastRatedSessionId = null;
+}
+
+async function submitRating(sessionId, rating) {
+    try {
+        const response = await fetch(`/api/sessions/${sessionId}/rating`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rating })
+        });
+        const result = await response.json();
+        console.log('[Rating] Result:', result);
+    } catch (err) {
+        console.error('[Rating] Error:', err);
+    }
+}
+
+// Event Listeners for Rating
+function initRatingListeners() {
+    const container = document.getElementById('starsContainer');
+    const skipBtn = document.getElementById('skipRatingBtn');
+    const submitBtn = document.getElementById('submitRatingBtn');
+    
+    if (!container) {
+        console.warn('[Rating] starsContainer not found yet, retrying...');
+        return;
+    }
+
+    const stars = container.querySelectorAll('.star');
+    stars.forEach(star => {
+        // Remove existing to prevent duplicates
+        const newStar = star.cloneNode(true);
+        star.replaceWith(newStar);
+    });
+
+    // Re-select after clone
+    const freshStars = container.querySelectorAll('.star');
+    freshStars.forEach(star => {
+        star.addEventListener('mouseover', () => {
+            if (selectedRating !== null) return;
+            const val = parseInt(star.dataset.value);
+            freshStars.forEach(s => {
+                if (parseInt(s.dataset.value) <= val) s.classList.add('hovered');
+                else s.classList.remove('hovered');
+            });
+        });
+
+        star.addEventListener('mouseout', () => {
+            if (selectedRating !== null) return;
+            freshStars.forEach(s => s.classList.remove('hovered'));
+        });
+
+        star.addEventListener('click', () => {
+            selectedRating = parseInt(star.dataset.value);
+            console.log('[Rating] Stars selected:', selectedRating);
+            
+            // Highlight stars up to selection
+            freshStars.forEach(s => {
+                if (parseInt(s.dataset.value) <= selectedRating) {
+                    s.classList.add('active');
+                    s.classList.remove('hovered');
+                } else {
+                    s.classList.remove('active', 'hovered');
+                }
+            });
+
+            // Enable submit button
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.classList.add('active-ready');
+            }
+        });
+    });
+
+    if (submitBtn) {
+        submitBtn.onclick = async () => {
+            if (lastRatedSessionId && selectedRating) {
+                console.log('[Rating] Final Submission:', selectedRating, 'stars for', lastRatedSessionId);
+                submitBtn.disabled = true;
+                submitBtn.innerText = 'Submitting...';
+                
+                await submitRating(lastRatedSessionId, selectedRating);
+                
+                submitBtn.innerText = 'Submitted! ✅';
+                setTimeout(closeRatingModal, 800);
+            }
+        };
+    }
+
+    if (skipBtn) {
+        skipBtn.onclick = () => closeRatingModal();
+    }
+}
+
+
+
 // ── Eager Initialization logic ──────────────────────────────────────────────
+
 async function ensureAudioContexts() {
     if (!playbackContext) {
         console.log("[Audio] Initializing playback context @ 24kHz...");
@@ -541,8 +688,13 @@ function connectWebSocket() {
 
         // Generate post-call summary for whatever session just ended
         if (closedSessionId) {
+            console.log('[Summary] Starting summary phase for:', closedSessionId);
             await generateAndStoreSummary(closedSessionId);
         }
+
+
+
+
     };
 
     ws.onmessage = async (event) => {
@@ -688,10 +840,17 @@ async function generateAndStoreSummary(sessionId) {
             hideSummaryCard();
         }
     } catch (err) {
-        console.error('Summary generation failed:', err);
+        console.error('[CRITICAL] Summary failed:', err);
         hideSummaryCard();
+    } finally {
+        console.log('[SEQUENCE] 1. Summary Attempt Finished');
+        console.log('[SEQUENCE] 2. Displaying Rating Modal for:', sessionId);
+        showRatingModal(sessionId);
     }
 }
+
+
+
 
 function getSavedSummary(sessionId) {
     try {
@@ -779,3 +938,4 @@ function hideSummaryCard() {
 
 // Initial load
 fetchSessions();
+initRatingListeners();

@@ -143,8 +143,10 @@ def init_db():
     # Migrate: add columns if they don't exist yet
     columns = [
         ('sessions', 'summary', 'TEXT'),
-        ('messages', 'duration_ms', 'INTEGER')
+        ('messages', 'duration_ms', 'INTEGER'),
+        ('sessions', 'rating', 'INTEGER')
     ]
+
     for table, col, col_type in columns:
         try:
             c.execute(f'ALTER TABLE {table} ADD COLUMN {col} {col_type}')
@@ -533,7 +535,26 @@ async def delete_session(session_id: str):
     conn.close()
     return {"status": "success"}
 
+@app.post("/api/sessions/{session_id}/rating")
+async def save_rating(session_id: str, rating_data: dict):
+    """Save the user rating for a session."""
+    rating = rating_data.get("rating")
+    if not isinstance(rating, int) or not (1 <= rating <= 5):
+        return {"error": "Invalid rating. Must be an integer between 1 and 5."}
+    
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("UPDATE sessions SET rating = ? WHERE id = ?", (rating, session_id))
+        conn.commit()
+        conn.close()
+        log_event(Colors.GREEN, "⭐", f"Saved {rating}-star rating for session {session_id}")
+        return {"status": "success"}
+    except Exception as e:
+        log_event(Colors.RED, "❌", f"Error saving rating: {e}")
+        return {"error": str(e)}
+
 @app.post("/api/sessions/{session_id}/summary")
+
 async def generate_summary(session_id: str):
     """Generate a post-call summary using the ADK summary_agent."""
     # 1. Fetch transcript from DB
