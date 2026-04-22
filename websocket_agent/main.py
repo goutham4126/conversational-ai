@@ -87,7 +87,8 @@ def flush_buffer_sync(sender, text, audio_data, session_id):
     
     # Save relevant audio to GCS
     if audio_data:
-        frame_rate = 24000  # Unified 24kHz for native quality and no playback speed issues
+        # User input is now 16kHz, Assistant output remains 24kHz
+        frame_rate = 16000 if sender == "User" else 24000
         # Calculate duration: (bytes / (sample_width * channels)) / frame_rate
         duration_ms = int((len(audio_data) / (2 * 1)) / frame_rate * 1000)
         
@@ -256,16 +257,16 @@ MODEL_NAME = "gemini-live-2.5-flash-native-audio"
 CONFIG = types.LiveConnectConfig(
     response_modalities=["AUDIO"],
     media_resolution="MEDIA_RESOLUTION_MEDIUM",
-    # speech_config moved to session-specific config to ensure dynamic selection
     realtime_input_config=types.RealtimeInputConfig(
         automatic_activity_detection=types.AutomaticActivityDetection(
-            disabled=False,  # Keep VAD on
+            disabled=False,
             start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH, 
             end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
-            prefix_padding_ms=200,      # Faster onset detection
-            silence_duration_ms=400,    # Snappier end-of-turn detection
+            prefix_padding_ms=150,
+            silence_duration_ms=300,
         )
     ),
+
     input_audio_transcription=types.AudioTranscriptionConfig(language_codes=[
         "en-US", "en-IN", "hi-IN", "ta-IN", "te-IN", "kn-IN", "ml-IN", "mr-IN", "gu-IN", "bn-IN", "pa-IN",
         "es-ES", "es-US", "fr-FR", "de-DE", "it-IT", "pt-BR", "zh-CN", "ja-JP", "ko-KR", "ar-SA", "ru-RU"
@@ -276,14 +277,8 @@ CONFIG = types.LiveConnectConfig(
     ]),
     system_instruction=types.Content(parts=[types.Part.from_text(text="""
     You are a professional, empathetic, and highly capable AI Voice Agent for an insurance company.
+    Immediately greet the customer once the call connects. Use a professional and warm tone.
 
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    CALL INITIATION PROTOCOL
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    - When the call begins, after 2 seconds of ringtone, the following message MUST be played BEFORE any greeting:
-    → "This call is being recorded for quality purposes."
-    - Only AFTER this message has been played, proceed with the standard greeting:
-    → "Hello! Thank you for calling us. I'm your insurance assistant. How may I help you today?"
 
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     IDENTITY & SCOPE
@@ -349,13 +344,10 @@ CONFIG = types.LiveConnectConfig(
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     CONVERSATION STRUCTURE
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    1. RECORDING NOTICE (automatic, before greeting):
-    → "This call is being recorded for quality purposes."
-
-    2. GREETING:
+    1. GREETING:
     → "Hello! Thank you for calling us. I'm your insurance assistant. How may I help you today?"
 
-    3. IDENTIFICATION (when needed):
+    2. IDENTIFICATION (when needed):
     → "May I have your policy number or registered email / mobile number to pull up your details?"
 
     4. RESOLUTION:
@@ -398,7 +390,18 @@ CONFIG = types.LiveConnectConfig(
     - Never sound robotic or scripted — adapt naturally to the flow of conversation.
     - You support barge-in: if the user interrupts at any point, STOP immediately and listen.
     - Never repeat the same phrase twice in the same conversation (e.g., avoid saying "Absolutely!" every turn).
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    FILLER & LATENCY PROTOCOL
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    - When you need to use a tool (fetch details/claims), DO NOT remain silent.
+    - IMMEDIATELY use a natural filler phrase while the tool is loading:
+      "One moment while I search for that claim...", "Let me pull up your account details...", 
+      "Just a second, I'm checking our database...", etc.
+    - Never let more than 500ms of silence pass once you've decided to use a tool.
     """)]))
+
+
 
 @app.get("/")
 async def get():
@@ -722,12 +725,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                         if "bytes" in message:
                             audio_data = message["bytes"]
                             
-                            # 🛡️ Safety Valve: HARD DROP user audio if AI is still greeting
+                            # 🛡️ Safety Valve: allow barge-in faster by only dropping very small initial bursts
                             if not first_turn_complete:
-                                if stats["user_audio_chunks"] % 50 == 0:
-                                    log_event(Colors.YELLOW, "🛡️", "Safety Valve: Dropping user audio during AI greeting")
                                 stats["user_audio_chunks"] += 1
-                                continue
+                                if stats["user_audio_chunks"] < 10: # Drop only first 300ms
+                                    continue
+
                             
                             # 🚀 Transmission: Put in queue for Gemini and buffer for GCS persistence
                             await out_queue.put({"data": audio_data, "mime_type": "audio/pcm"})
@@ -879,10 +882,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                                     user_transcript_buffer += chunk
                                     
                                     # --- Speculative Engine ---
-                                    # Look for Claim IDs: CL-105 or CL105
-                                    claim_matches = re.findall(r"(?:CL-?\d+)", user_transcript_buffer, re.IGNORECASE)
+                                    # Look for Claim IDs: CL-105, CL105, or raw 4-digit numbers (like 7070)
+                                    claim_matches = re.findall(r"(?:CL-?\d+)|(?:\b\d{4}\b)", user_transcript_buffer, re.IGNORECASE)
                                     for mid in claim_matches:
-                                        asyncio.create_task(speculative_fetch("get_claim", "claim_number", mid.upper()))
+                                        # Use the digits only if it's a raw number, or the whole thing if it has CL-
+                                        clean_id = mid.upper().replace("CL-", "").replace("CL", "")
+                                        asyncio.create_task(speculative_fetch("get_claim", "claim_number", clean_id))
                                     
                                     # Look for Emails
                                     email_matches = re.findall(r"[\w\.-]+@[\w\.-]+\.\w+", user_transcript_buffer)
@@ -891,6 +896,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                                         asyncio.create_task(speculative_fetch("get_customer", "email", email.lower()))
                                         asyncio.create_task(speculative_fetch("get_full_details", "email", email.lower()))
                                     # --------------------------
+
 
                                     await websocket.send_text(json.dumps({
                                         "type": "transcript", "sender": "User", "text": chunk

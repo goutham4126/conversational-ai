@@ -1,7 +1,9 @@
 let ws = null;
 let inputProcessorNode = null;
 let playbackProcessorNode = null;
-let audioContext = null;
+let playbackContext = null;
+let recordingContext = null;
+
 
 let currentSessionId = null;
 let currentVoice = 'Zephyr';
@@ -153,78 +155,28 @@ if (voiceTrigger) {
 window.addEventListener('click', () => toggleVoiceDropdown(false));
 initVoiceSelector();
 
-let ringbackTone = null;
+// RingbackTone removed for maximum speed
 
-class RingbackTone {
-    constructor() {
-        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-        this.osc1 = null;
-        this.osc2 = null;
-        this.gain = null;
-        this.isPlaying = false;
-    }
-
-    start() {
-        if (this.isPlaying) return;
-        this.isPlaying = true;
-        this.playSequence();
-    }
-
-    playSequence() {
-        if (!this.isPlaying) return;
-
-        this.osc1 = this.ctx.createOscillator();
-        this.osc2 = this.ctx.createOscillator();
-        this.gain = this.ctx.createGain();
-
-        this.osc1.frequency.value = 440;
-        this.osc2.frequency.value = 480;
-        this.gain.gain.value = 0.1;
-
-        this.osc1.connect(this.gain);
-        this.osc2.connect(this.gain);
-        this.gain.connect(this.ctx.destination);
-
-        this.osc1.start();
-        this.osc2.start();
-
-        // US Ringback: 2s on, 4s off
-        setTimeout(() => {
-            if (this.isPlaying) this.stopCurrent();
-            this.timerId = setTimeout(() => this.playSequence(), 4000);
-        }, 2000);
-    }
-
-    stopCurrent() {
-        if (this.osc1) { this.osc1.stop(); this.osc1.disconnect(); }
-        if (this.osc2) { this.osc2.stop(); this.osc2.disconnect(); }
-        if (this.gain) { this.gain.disconnect(); }
-        this.osc1 = null; this.osc2 = null; this.gain = null;
-    }
-
-    stop() {
-        this.isPlaying = false;
-        this.stopCurrent();
-        if (this.timerId) clearTimeout(this.timerId);
-    }
-}
 
 // ── Eager Initialization logic ──────────────────────────────────────────────
 async function ensureAudioContexts() {
-    if (!audioContext) {
-        console.log("[Audio] Eagerly initializing unified audio context...");
-        // Use 24kHz as the base as it's the model's output rate. Browsers will resample input to this.
-        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-        
-        await audioContext.audioWorklet.addModule('/static/playback-processor.js');
-        await audioContext.audioWorklet.addModule('/static/pcm-processor.js');
-        
-        playbackProcessorNode = new AudioWorkletNode(audioContext, 'playback-processor');
-        playbackProcessorNode.connect(audioContext.destination);
+    if (!playbackContext) {
+        console.log("[Audio] Initializing playback context @ 24kHz...");
+        playbackContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+        await playbackContext.audioWorklet.addModule('/static/playback-processor.js');
+        playbackProcessorNode = new AudioWorkletNode(playbackContext, 'playback-processor');
+        playbackProcessorNode.connect(playbackContext.destination);
     }
 
-    if (audioContext.state === 'suspended') await audioContext.resume();
-    console.log("[Audio] Unified context ready at 24kHz.");
+    if (!recordingContext) {
+        console.log("[Audio] Initializing recording context @ 16kHz...");
+        recordingContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        await recordingContext.audioWorklet.addModule('/static/pcm-processor.js');
+    }
+
+    if (playbackContext.state === 'suspended') await playbackContext.resume();
+    if (recordingContext.state === 'suspended') await recordingContext.resume();
+    console.log("[Audio] Audio contexts ready (Input: 16kHz, Output: 24kHz).");
 }
 
 // Use a one-time click listener to unlock AudioContext early
@@ -565,10 +517,9 @@ function connectWebSocket() {
     currentSender = null;
     currentMessageContentDiv = null;
 
-    // Show connecting UI and start sound
+    // Show connecting UI (briefly, until WS opens)
     if (callingOverlay) callingOverlay.style.display = 'flex';
-    if (!ringbackTone) ringbackTone = new RingbackTone();
-    ringbackTone.start();
+
 
     ws.onopen = () => {
         connStatus.classList.add('connected');
@@ -582,7 +533,7 @@ function connectWebSocket() {
 
         // Clear connecting state if it was still active
         if (callingOverlay) callingOverlay.style.display = 'none';
-        if (ringbackTone) ringbackTone.stop();
+
         // Capture session id before stopRecording can reset state
         const closedSessionId = currentSessionId;
         stopRecording();
@@ -612,7 +563,7 @@ function connectWebSocket() {
             } else if (data.type === 'transcript') {
                 // As soon as we get the first transcript or response, stop the ringing
                 if (callingOverlay) callingOverlay.style.display = 'none';
-                if (ringbackTone) ringbackTone.stop();
+
 
                 appendMessage(data.sender, data.text);
             } else if (data.type === 'latency') {
@@ -625,7 +576,7 @@ function connectWebSocket() {
         } else {
             // First audio chunk also stops the ringing
             if (callingOverlay) callingOverlay.style.display = 'none';
-            if (ringbackTone) ringbackTone.stop();
+
 
             processAudioChunk(event.data);
         }
@@ -642,13 +593,13 @@ async function startRecording() {
                 noiseSuppression: true,
                 autoGainControl: true,
                 channelCount: 1,
-                sampleRate: 24000
+                sampleRate: 16000
             }
         };
         mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-        const source = audioContext.createMediaStreamSource(mediaStream);
+        const source = recordingContext.createMediaStreamSource(mediaStream);
 
-        inputProcessorNode = new AudioWorkletNode(audioContext, 'pcm-processor');
+        inputProcessorNode = new AudioWorkletNode(recordingContext, 'pcm-processor');
         inputProcessorNode.port.onmessage = (e) => {
             if (ws && ws.readyState === WebSocket.OPEN && agentOpeningComplete) {
                 ws.send(e.data.buffer);
@@ -656,9 +607,10 @@ async function startRecording() {
         };
 
         source.connect(inputProcessorNode);
-        inputProcessorNode.connect(audioContext.destination);
+        inputProcessorNode.connect(recordingContext.destination);
 
         micBtn.classList.add('active');
+
         statusText.innerText = 'End Call';
         if (voiceSelectorContainer) voiceSelectorContainer.style.display = 'none';
         updateVisualizer(true);
@@ -672,13 +624,15 @@ function stopRecording() {
     if (inputProcessorNode) { inputProcessorNode.disconnect(); inputProcessorNode = null; }
     if (mediaStream) { mediaStream.getTracks().forEach(track => track.stop()); mediaStream = null; }
 
-    if (audioContext) audioContext.suspend();
+    if (recordingContext) recordingContext.suspend();
+    if (playbackContext) playbackContext.suspend();
 
     micBtn.classList.remove('active');
     statusText.innerText = 'Start Support Call';
     if (voiceSelectorContainer) voiceSelectorContainer.style.display = 'flex';
     if (latencyInfo) latencyInfo.style.display = 'none';
     updateVisualizer(false);
+
 
     // Reset sender state so the next call starts a new bubble
     currentSender = null;

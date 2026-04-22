@@ -1,14 +1,20 @@
 class PCMProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.bufferSize = 512;
+    this.bufferSize = 256;
+
     this.buffer = new Int16Array(this.bufferSize);
     this.bufferIndex = 0;
     
     // Sliding Window VAD settings
     this.threshold = 0.004; // RMS energy threshold
-    this.historySize = 3;  // Reduced from 5 to 3 for ultra-low latency
+    this.historySize = 2;   // Reduced from 3 to 2 for even faster trigger
     this.energyHistory = [];
+
+    // Pre-roll buffer: stores audio during "silence" to prevent clipping the start of speech
+    this.preRollCapacity = 10; // Store last ~320ms of audio
+    this.preRollBuffer = [];
+    this.isSpeaking = false;
   }
 
   process(inputs, outputs, parameters) {
@@ -38,11 +44,27 @@ class PCMProcessor extends AudioWorkletProcessor {
         this.bufferIndex++;
 
         if (this.bufferIndex >= this.bufferSize) {
-          // Only send the chunk to the WebSocket if the average energy is above threshold
-          // This rejects impulsive noise (claps) and constant mic hiss
+          const chunk = this.buffer.slice(0);
+          
           if (avgEnergy > this.threshold) {
-             this.port.postMessage(this.buffer.slice(0));
+             // Voice detected!
+             if (!this.isSpeaking) {
+                // Flush pre-roll buffer first so Gemini gets the start of the sentence
+                while (this.preRollBuffer.length > 0) {
+                   this.port.postMessage(this.preRollBuffer.shift());
+                }
+                this.isSpeaking = true;
+             }
+             this.port.postMessage(chunk);
+          } else {
+             // Silence: store in pre-roll
+             this.isSpeaking = false;
+             this.preRollBuffer.push(chunk);
+             if (this.preRollBuffer.length > this.preRollCapacity) {
+                this.preRollBuffer.shift();
+             }
           }
+          
           this.buffer = new Int16Array(this.bufferSize);
           this.bufferIndex = 0;
         }
