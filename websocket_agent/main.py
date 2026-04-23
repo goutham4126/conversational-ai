@@ -824,8 +824,64 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                 last_user_word_time = 0
                 first_agent_word_received = False
                 latencies = []
-                # Speculative tool cache: { (tool_name, id): asyncio.Task }
                 speculative_cache = {}
+                
+                # Signal for background tool processing
+                turn_complete_event = asyncio.Event()
+
+                tool_map = {
+                    "get_customer": get_customer,
+                    "get_claim": get_claim,
+                    "get_full_details": get_full_details
+                }
+
+                async def execute_one_tool(fc, tool_func):
+                    try:
+                        arg_val = next(iter(fc.args.values())) if fc.args else None
+                        key = (fc.name, arg_val)
+                        if key in speculative_cache:
+                            log_event(Colors.GREEN + Colors.BOLD, "⚡", f"INSTANT RESPONSE: Using cached speculative result for {fc.name}({arg_val})")
+                            result = await speculative_cache[key]
+                        else:
+                            log_event(Colors.YELLOW, "⏳", f"Tool {fc.name} not in speculative cache, calling now...")
+                            result = await tool_func(**fc.args)
+                        
+                        return types.FunctionResponse(name=fc.name, id=fc.id, response=result)
+                    except Exception as e:
+                        log_event(Colors.RED, "❌", f"Tool {fc.name} error: {e}")
+                        return types.FunctionResponse(name=fc.name, id=fc.id, response={"error": str(e)})
+
+                async def handle_tool_calls_background(tool_call_obj):
+                    """Processes tool calls in the background while audio streams, then waits for turn completion."""
+                    log_event(Colors.YELLOW, "🛠️", f"Starting background tool execution for: {[fc.name for fc in tool_call_obj.function_calls]}")
+                    
+                    # 1. Parallel execution
+                    tool_tasks = []
+                    for fc in tool_call_obj.function_calls:
+                        tool_func = tool_map.get(fc.name)
+                        if tool_func:
+                            tool_tasks.append(execute_one_tool(fc, tool_func))
+                    
+                    if not tool_tasks: return
+                    
+                    function_responses = await asyncio.gather(*tool_tasks)
+                    
+                    # 2. Wait for current turn (filler) to finish so it's heard before next response
+                    log_event(Colors.CYAN, "⏳", "Tools ready, waiting for filler turn to complete...")
+                    try:
+                        # Wait for the turn_complete signal from the main loop
+                        await asyncio.wait_for(turn_complete_event.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        log_event(Colors.YELLOW, "⚠️", "Turn complete signal timed out — delivering tool results now.")
+                    
+                    # 3. Final Break: Break the bubble between Filler and Data Response
+                    await websocket.send_text(json.dumps({"type": "new_bubble"}))
+                    log_event(Colors.CYAN, "🫧", "Sent new_bubble signal after filler completion")
+                    
+                    # 4. Return results to model
+                    await session.send(input=types.LiveClientToolResponse(function_responses=function_responses))
+                    log_event(Colors.GREEN, "🚀", "Tool results delivered to Gemini.")
+                    turn_complete_event.clear()
 
                 async def speculative_fetch(tool_name, arg_name, arg_val):
                     key = (tool_name, arg_val)
@@ -835,72 +891,24 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                     log_event(Colors.CYAN, "🚀", f"Speculative Fetch: {tool_name}({arg_val}) started while user is speaking...")
                     tool_func = tool_map.get(tool_name)
                     if tool_func:
-                        # Create task and store in cache
                         task = asyncio.create_task(tool_func(**{arg_name: arg_val}))
                         speculative_cache[key] = task
                         try:
                             await task
                             log_event(Colors.CYAN, "✨", f"Speculative Fetch: {tool_name}({arg_val}) completed and cached.")
                         except Exception as e:
-                            log_event(Colors.RED, "⚠️", f"Speculative Fetch failed for {arg_val}: {e}")
+                            log_event(Colors.RED, "⚠️", f"Speculative Fetch failed: {e}")
 
                 try:
                     while True:
-                        tool_map = {
-                            "get_customer": get_customer,
-                            "get_claim": get_claim,
-                            "get_full_details": get_full_details
-                        }
                         async for response in session.receive():
-                            # 0. Handle Tool Calls
+                            # 0. Handle Tool Calls (Non-Blocking)
                             if response.tool_call:
-                                log_event(Colors.YELLOW, "🛠️", f"Gemini requested tools: {[fc.name for fc in response.tool_call.function_calls]}")
-                                function_responses = []
-                                for fc in response.tool_call.function_calls:
-                                    tool_func = tool_map.get(fc.name)
-                                    if tool_func:
-                                        try:
-                                            arg_val = next(iter(fc.args.values())) if fc.args else None
-                                            if (fc.name, arg_val) in speculative_cache:
-                                                log_event(Colors.GREEN + Colors.BOLD, "⚡", f"INSTANT RESPONSE: Using cached speculative result for {fc.name}({arg_val})")
-                                                result = await speculative_cache[(fc.name, arg_val)]
-                                                # 🕒 Realism Delay: Wait a bit so the filler phrase can be heard
-                                                await asyncio.sleep(0.8)
-
-                                            else:
-                                                log_event(Colors.YELLOW, "⏳", f"Tool {fc.name} not in speculative cache, calling now...")
-                                                result = await tool_func(**fc.args)
-
-                                            function_responses.append(
-                                                types.FunctionResponse(
-                                                    name=fc.name,
-                                                    id=fc.id,
-                                                    response=result
-                                                )
-                                            )
-
-                                            log_event(Colors.GREEN, "✅", f"Tool {fc.name} result obtained.")
-                                        except Exception as tool_err:
-                                            log_event(Colors.RED, "❌", f"Tool {fc.name} error: {tool_err}")
-                                            function_responses.append(
-                                                types.FunctionResponse(
-                                                    name=fc.name,
-                                                    id=fc.id,
-                                                    response={"error": str(tool_err)}
-                                                )
-                                            )
-                                
-                                if function_responses:
-                                    # 🫧 Synchronization Delay: Wait for the filler audio/transcript to commit
-                                    await asyncio.sleep(0.5)
-                                    # 🫧 Bubble Break: Signal browser to start a new bubble for the data response
-                                    await websocket.send_text(json.dumps({"type": "new_bubble"}))
-                                    # 🚀 Give model a tiny bit of breath after the break
-                                    await asyncio.sleep(0.5)
-                                    await session.send(input=types.LiveClientToolResponse(function_responses=function_responses))
-                                continue
-
-
+                                log_event(Colors.YELLOW, "⚒️", "Tool Call Detected — Triggering immediate bubble break and background execution.")
+                                # Ensure filler starts in a new bubble if it wasn't already
+                                await websocket.send_text(json.dumps({"type": "new_bubble"}))
+                                asyncio.create_task(handle_tool_calls_background(response.tool_call))
+                                # DO NOT continue here — fall through for transcription
 
                             server_content = response.server_content
                             
@@ -918,6 +926,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                                 user_audio_turn_buffer = bytearray() 
                                 assistant_audio_turn_buffer = bytearray()
                                 await websocket.send_text(json.dumps({"type": "clear_audio_queue"}))
+                                turn_complete_event.clear()
                                 continue
 
                             if not server_content: continue
@@ -964,6 +973,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                                         }))
 
                                     assistant_transcript_buffer += chunk
+                                    log_event(Colors.GREEN, "⬇️ ", f"Assistant Transcript: {chunk}")
                                     await websocket.send_text(json.dumps({
                                         "type": "transcript", "sender": "Assistant", "text": chunk
                                     }))
@@ -985,8 +995,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                                             "type": "transcript", "sender": "Assistant", "text": part.text
                                         }))
 
-                            # 4. Handle Turn Completion (Commit to DB)
+                            # 4. Handle Turn Completion (Commit to DB & Signal Background Task)
                             if server_content.turn_complete:
+                                # Signal background tool tasks that speaking is done
+                                turn_complete_event.set()
                                 first_agent_word_received = False 
                                 
                                 # 🛡️ Final Greeting Guard Fix: Signal browser that greeting is done
@@ -1016,6 +1028,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                     else:
                         log_event(Colors.RED, "❌", f"Model receive error: {e}")
                         traceback.print_exc()
+
 
             # Use list of tasks to ensure clean cleanup
             tasks = [

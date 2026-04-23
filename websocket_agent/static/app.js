@@ -707,12 +707,15 @@ function connectWebSocket() {
             } else if (data.type === 'greeting_complete') {
                 agentOpeningComplete = true;
                 console.log('[Audio] AI Greeting finished. User microphone transmission enabled.');
-            } else if (data.type === 'clear_audio_queue' || data.type === 'new_bubble') {
-                flushPlayback();
-                // Force next message to start a new bubble
+            } else if (data.type === 'clear_audio_queue') {
+                flushPlayback(); // Mark current as interrupted
                 currentSender = null;
                 currentMessageContentDiv = null;
-                if (data.type === 'new_bubble') console.log('[UI] Forcing new message bubble');
+            } else if (data.type === 'new_bubble') {
+                // Just break the bubble link, don't mark as interrupted
+                currentSender = null;
+                currentMessageContentDiv = null;
+                console.log('[UI] Forcing new message bubble');
             } else if (data.type === 'transcript') {
 
                 // As soon as we get the first transcript or response, stop the ringing
