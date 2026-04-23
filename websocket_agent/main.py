@@ -242,6 +242,7 @@ class SessionInfo(BaseModel):
     id: str
     title: str
     created_at: str
+    rating: Optional[int] = None
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -432,10 +433,26 @@ async def get():
 async def get_sessions():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT id, title, created_at FROM sessions ORDER BY created_at DESC")
+    c.execute("SELECT id, title, created_at, rating FROM sessions ORDER BY created_at DESC")
     rows = c.fetchall()
     conn.close()
-    return [{"id": r[0], "title": r[1], "created_at": r[2]} for r in rows]
+    return [{"id": r[0], "title": r[1], "created_at": r[2], "rating": r[3]} for r in rows]
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, title, created_at, rating, summary FROM sessions WHERE id = ?", (session_id,))
+    r = c.fetchone()
+    conn.close()
+    if not r: return {"error": "Session not found"}
+    return {
+        "id": r[0], 
+        "title": r[1], 
+        "created_at": r[2], 
+        "rating": r[3], 
+        "summary": json.loads(r[4]) if r[4] else None
+    }
 
 @app.get("/api/sessions/{session_id}/messages", response_model=List[Message])
 async def get_messages(session_id: str):
@@ -614,17 +631,20 @@ async def generate_summary(session_id: str):
         if cleaned.startswith('json'):
             cleaned = cleaned[4:].strip()
         summary_data = json.loads(cleaned)
-        log_event(Colors.GREEN, "📋", f"Summary generated for session {session_id}: {summary_data.get('title', 'N/A')}")
-        # Persist summary to DB so it can be used as session context on resume
-        try:
-            db_conn = sqlite3.connect(DB_PATH)
-            db_conn.execute("UPDATE sessions SET summary = ?, title = ? WHERE id = ?",
-                            (json.dumps(summary_data), summary_data.get('title', 'Call Summary'), session_id))
-            db_conn.commit()
-            db_conn.close()
-        except Exception as db_err:
-            log_event(Colors.YELLOW, "⚠️", f"Failed to persist summary to DB: {db_err}")
-        return {"status": "success", "summary": summary_data, "session_id": session_id}
+        # 4. Save to DB and fetch latest rating to return
+        db_conn = sqlite3.connect(DB_PATH)
+        db_conn.execute("UPDATE sessions SET summary = ?, title = ? WHERE id = ?",
+                        (json.dumps(summary_data), summary_data.get('title', 'Call Summary'), session_id))
+        db_conn.commit()
+        
+        # Re-fetch rating in case it was just saved by another task
+        c = db_conn.cursor()
+        c.execute("SELECT rating FROM sessions WHERE id = ?", (session_id,))
+        current_rating = c.fetchone()[0]
+        db_conn.close()
+
+        log_event(Colors.GREEN, "📋", f"Summary generated for session {session_id}: {summary_data.get('title', 'N/A')} (Rating: {current_rating})")
+        return {"status": "success", "summary": summary_data, "session_id": session_id, "rating": current_rating}
 
     except json.JSONDecodeError as e:
         log_event(Colors.YELLOW, "⚠️", f"Summary JSON parse failed: {e}. Raw: {response_text[:200]}")

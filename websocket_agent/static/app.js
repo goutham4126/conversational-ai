@@ -7,7 +7,14 @@ let recordingContext = null;
 
 let currentSessionId = null;
 let currentVoice = 'Zephyr';
-let agentOpeningComplete = false;
+let lastRatedSessionId = null;
+let selectedRating = null;
+
+// Post-Call Flow Synchronization State
+let summaryReady = false;
+let ratingFinished = false;
+let pendingSummary = null;
+let currentRatingInHeader = null; // Track rating for the header display
 
 // ── Voices Dataset ──────────────────────────────────────────────────────────
 const voicesData = [
@@ -102,8 +109,7 @@ const ratingModal = document.getElementById('ratingModal');
 const starsContainer = document.getElementById('starsContainer');
 const skipRatingBtn = document.getElementById('skipRatingBtn');
 const submitRatingBtn = document.getElementById('submitRatingBtn');
-let lastRatedSessionId = null;
-let selectedRating = null;
+let agentOpeningComplete = false;
 
 
 const voiceTrigger = document.getElementById('voiceTrigger');
@@ -291,6 +297,18 @@ function initRatingListeners() {
                 
                 await submitRating(lastRatedSessionId, selectedRating);
                 
+                // Update flow state
+                ratingFinished = true;
+                currentRatingInHeader = selectedRating;
+                
+                // If summary is already ready, show it now
+                if (summaryReady && pendingSummary) {
+                    showSummaryCard({ summary: pendingSummary, rating: currentRatingInHeader });
+                } else {
+                    // Otherwise show loading until background fetch finishes
+                    showSummaryCard({ loading: true });
+                }
+                
                 submitBtn.innerText = 'Submitted! ✅';
                 setTimeout(closeRatingModal, 800);
             }
@@ -298,7 +316,16 @@ function initRatingListeners() {
     }
 
     if (skipBtn) {
-        skipBtn.onclick = () => closeRatingModal();
+        skipBtn.onclick = () => {
+            ratingFinished = true;
+            currentRatingInHeader = null;
+            if (summaryReady && pendingSummary) {
+                showSummaryCard({ summary: pendingSummary, rating: null });
+            } else {
+                showSummaryCard({ loading: true });
+            }
+            closeRatingModal();
+        };
     }
 }
 
@@ -462,7 +489,7 @@ function renderSessions(sessions) {
     sessions.forEach(session => {
         const item = document.createElement('div');
         item.className = `session-item ${currentSessionId === session.id ? 'active' : ''}`;
-        item.onclick = () => selectSession(session.id);
+        item.onclick = () => selectSession(session.id, session.rating);
 
         const date = new Date(session.created_at).toLocaleDateString(undefined, {
             month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
@@ -506,7 +533,7 @@ async function deleteSession(id) {
     }
 }
 
-async function selectSession(id) {
+async function selectSession(id, rating = null) {
     if (ws) {
         ws.close();
     }
@@ -520,13 +547,18 @@ async function selectSession(id) {
     transcriptArea.innerHTML = '<div class="session-skeleton"></div><div class="session-skeleton"></div>';
 
     try {
-        const response = await fetch(`/api/sessions/${id}/messages`);
-        const messages = await response.json();
+        // Fetch absolute latest session info (including rating & summary)
+        const sessRes = await fetch(`/api/sessions/${id}`);
+        const session = await sessRes.json();
+        const latestRating = session.rating;
 
+        const msgRes = await fetch(`/api/sessions/${id}/messages`);
+        const messages = await msgRes.json();
+ 
         transcriptArea.innerHTML = ''; // Clear skeleton
         currentSender = null;
         currentMessageContentDiv = null;
-
+ 
         if (messages.length === 0) {
             transcriptArea.innerHTML = `
                 <div class="welcome-screen">
@@ -537,11 +569,11 @@ async function selectSession(id) {
         } else {
             messages.forEach(msg => appendMessage(msg.sender, msg.text, true, msg.audio_path, msg));
         }
-
-        // Restore cached summary if available
-        const cached = getSavedSummary(id);
-        if (cached) {
-            showSummaryCard({ summary: cached });
+ 
+        // Restore summary from DB or cache
+        const summaryToUse = session.summary || getSavedSummary(id);
+        if (summaryToUse) {
+            showSummaryCard({ summary: summaryToUse, rating: latestRating });
         } else {
             hideSummaryCard();
         }
@@ -685,11 +717,19 @@ function connectWebSocket() {
         const closedSessionId = currentSessionId;
         stopRecording();
         fetchSessions();
-
-        // Generate post-call summary for whatever session just ended
+        
+        // Reorder Post-Call Flow: Rating First, Summary in background
         if (closedSessionId) {
-            console.log('[Summary] Starting summary phase for:', closedSessionId);
-            await generateAndStoreSummary(closedSessionId);
+            console.log('[SEQUENCE] 1. Triggering Rating Modal First');
+            summaryReady = false;
+            ratingFinished = false;
+            pendingSummary = null;
+            currentRatingInHeader = null;
+            
+            showRatingModal(closedSessionId);
+            
+            console.log('[SEQUENCE] 2. Generating Summary in Background');
+            generateAndStoreSummary(closedSessionId);
         }
 
 
@@ -830,27 +870,26 @@ if (syncBtn) syncBtn.onclick = syncFromCloud;
 
 async function generateAndStoreSummary(sessionId) {
     try {
-        // Brief delay to let DB writes finish
-        await new Promise(r => setTimeout(r, 1500));
-        showSummaryCard({ loading: true });
-
+        // Fetch from API in background
         const res = await fetch(`/api/sessions/${sessionId}/summary`, { method: 'POST' });
         const data = await res.json();
-
+ 
         if (data.status === 'success' && data.summary) {
-            // Persist in localStorage keyed by session id
+            pendingSummary = data.summary;
+            summaryReady = true;
             localStorage.setItem(`summary_${sessionId}`, JSON.stringify(data.summary));
-            showSummaryCard({ summary: data.summary });
-        } else {
-            hideSummaryCard();
+            console.log('[SEQUENCE] Summary Ready in background. Rating from DB:', data.rating);
+ 
+            // If user already finished rating, show the card now
+            // We use the rating from the DB response to ensure accuracy
+            if (ratingFinished) {
+                showSummaryCard({ summary: pendingSummary, rating: data.rating || currentRatingInHeader });
+            }
         }
     } catch (err) {
-        console.error('[CRITICAL] Summary failed:', err);
-        hideSummaryCard();
-    } finally {
-        console.log('[SEQUENCE] 1. Summary Attempt Finished');
-        console.log('[SEQUENCE] 2. Displaying Rating Modal for:', sessionId);
-        showRatingModal(sessionId);
+        console.error('[CRITICAL] Summary background fetch failed:', err);
+        summaryReady = true; // Mark as "done" but with null pendingSummary
+        if (ratingFinished) hideSummaryCard();
     }
 }
 
@@ -864,7 +903,7 @@ function getSavedSummary(sessionId) {
     } catch { return null; }
 }
 
-function showSummaryCard({ loading = false, summary = null } = {}) {
+function showSummaryCard({ loading = false, summary = null, rating = null } = {}) {
     let card = document.getElementById('summaryCard');
     const transcriptArea = document.getElementById('transcriptArea');
 
@@ -887,7 +926,11 @@ function showSummaryCard({ loading = false, summary = null } = {}) {
         return;
     }
 
-    if (!summary) { hideSummaryCard(); return; }
+    if (!summary) { 
+        console.warn('[Summary] showSummaryCard called with null summary');
+        hideSummaryCard(); 
+        return; 
+    }
 
     const sentimentEmoji = { positive: '😊', neutral: '😐', negative: '😟', escalated: '🚨' };
     const sentimentClass = { positive: 'sentiment-positive', neutral: 'sentiment-neutral', negative: 'sentiment-negative', escalated: 'sentiment-escalated' };
@@ -905,11 +948,19 @@ function showSummaryCard({ loading = false, summary = null } = {}) {
            </div>`
         : '';
 
+    // Handle Rating Display
+    let ratingHTML = '';
+    if (rating) {
+        const stars = '⭐'.repeat(rating);
+        ratingHTML = `<span class="summary-rating-header">${stars} ${rating}/5</span>`;
+    }
+
     card.className = 'summary-card';
     card.innerHTML = `
         <div class="summary-header">
             <div class="summary-icon">📋</div>
             <div class="summary-title-text">${summary.title || 'Call Summary'}</div>
+            ${ratingHTML}
             <span class="summary-sentiment-badge ${sClass}">${emoji} ${summary.sentiment || 'neutral'}</span>
             <button class="summary-close-btn" onclick="hideSummaryCard()" title="Dismiss">✕</button>
         </div>
