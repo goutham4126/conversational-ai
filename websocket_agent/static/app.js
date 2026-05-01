@@ -697,7 +697,16 @@ function connectWebSocket() {
     currentMessageContentDiv = null;
 
     // Show connecting UI (briefly, until WS opens)
-    if (callingOverlay) callingOverlay.style.display = 'flex';
+    console.log("[UI] Attempting to show callingOverlay:", callingOverlay);
+    if (callingOverlay) {
+        callingOverlay.style.display = 'flex';
+        console.log("[UI] callingOverlay display set to flex");
+    } else {
+        console.error("[UI] callingOverlay element NOT found!");
+        // Try to find it again just in case
+        const retryOverlay = document.getElementById('callingOverlay');
+        if (retryOverlay) retryOverlay.style.display = 'flex';
+    }
 
 
     ws.onopen = () => {
