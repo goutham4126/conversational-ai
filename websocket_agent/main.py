@@ -879,10 +879,18 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                     "get_full_details": get_full_details
                 }
 
+                def normalize_key(tool, val):
+                    if not isinstance(val, str):
+                        return (tool, val)
+                    cleaned = val.strip().upper()
+                    if tool == "get_claim":
+                        cleaned = cleaned.replace("CL-", "").replace("CL", "")
+                    return (tool, cleaned)
+
                 async def execute_one_tool(fc, tool_func):
                     try:
                         arg_val = next(iter(fc.args.values())) if fc.args else None
-                        key = (fc.name, arg_val)
+                        key = normalize_key(fc.name, arg_val)
                         if key in speculative_cache:
                             log_event(Colors.GREEN + Colors.BOLD, "⚡", f"INSTANT RESPONSE: Using cached speculative result for {fc.name}({arg_val})")
                             result = await speculative_cache[key]
@@ -928,7 +936,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                     turn_complete_event.clear()
 
                 async def speculative_fetch(tool_name, arg_name, arg_val):
-                    key = (tool_name, arg_val)
+                    key = normalize_key(tool_name, arg_val)
                     if key in speculative_cache:
                         return
                     
@@ -977,9 +985,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
 
                             # 1. Handle User Transcript
                             if server_content.input_transcription:
-                                last_user_word_time = time.time()
+                                # We only log the chunk, do not continuously update last_user_word_time here to avoid masking latency
                                 chunk = server_content.input_transcription.text
                                 if chunk:
+                                    log_event(Colors.CYAN, "🗣️ ", f"Model Received User Transcript: {chunk}")
+                                    if last_user_word_time == 0:
+                                        last_user_word_time = time.perf_counter()
                                     user_transcript_buffer += chunk
                                     
                                     # --- Speculative Engine ---
@@ -1009,7 +1020,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                                 if chunk:
                                     if not first_agent_word_received and last_user_word_time > 0:
                                         first_agent_word_received = True
-                                        latency = int((time.time() - last_user_word_time) * 1000)
+                                        latency = int((time.perf_counter() - last_user_word_time) * 1000)
                                         latencies.append(latency)
                                         avg_latency = int(sum(latencies) / len(latencies))
                                         await websocket.send_text(json.dumps({
@@ -1027,6 +1038,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                             if model_turn:
                                 for part in model_turn.parts:
                                     if part.inline_data:
+                                        log_event(Colors.MAGENTA, "🔊", f"Received Assistant Audio Chunk ({len(part.inline_data.data)} bytes)")
                                         audio_bytes = part.inline_data.data
                                         assistant_audio_turn_buffer.extend(audio_bytes)
                                         stats["model_audio_chunks"] += 1
@@ -1041,9 +1053,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
 
                             # 4. Handle Turn Completion (Commit to DB & Signal Background Task)
                             if server_content.turn_complete:
+                                log_event(Colors.YELLOW, "✅", "Model Turn Complete Received")
                                 # Signal background tool tasks that speaking is done
                                 turn_complete_event.set()
                                 first_agent_word_received = False 
+                                last_user_word_time = 0
                                 
                                 # 🛡️ Final Greeting Guard Fix: Signal browser that greeting is done
                                 if not first_turn_complete:
