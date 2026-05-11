@@ -6,7 +6,7 @@ import uvicorn
 # Initialize FastMCP server
 mcp = FastMCP("Insurance Tool Server")
 
-BASE_URL = "https://insurance-api-471936962134.us-central1.run.app"
+BASE_URL = "https://conversational-ai-api-39385195748.us-central1.run.app"
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -31,8 +31,11 @@ def get_customer(email: str) -> dict:
 def get_claim(claim_number: str) -> dict:
     """
     Retrieve specific claim details and status by claim number.
-    Use this when a user provides a claim ID (e.g., CLM101) or asks about a specific incident.
+    Use this when a user provides a claim ID (e.g., CL101) or asks about a specific incident.
     """
+    claim_number = claim_number.strip().upper().replace("CL-", "").replace("CL ", "")
+    if not claim_number.startswith("CL"):
+        claim_number = f"CL{claim_number}"
     logger.info(f"Calling get_claim for: {claim_number}")
     try:
         res = requests.get(f"{BASE_URL}/claim/{claim_number}", timeout=10)

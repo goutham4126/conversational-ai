@@ -27,7 +27,7 @@ from google.adk.runners import InMemoryRunner
 from agent import summary_agent
 
 # Direct API Tool Implementations for Ultra-Low Latency (<350ms)
-BASE_API_URL = "https://insurance-api-471936962134.us-central1.run.app"
+BASE_API_URL = "https://conversational-ai-api-39385195748.us-central1.run.app"
 # Persistent client for connection pooling
 shared_client = httpx.AsyncClient(
     timeout=httpx.Timeout(10.0, connect=5.0),
@@ -37,6 +37,7 @@ shared_client = httpx.AsyncClient(
 
 async def get_customer(email: str):
     """Get basic customer details using their registered email address."""
+    email = email.strip().lower()
     log_event(Colors.CYAN, "🔌", f"Direct API: get_customer({email})")
     start = time.time()
     try:
@@ -51,6 +52,9 @@ async def get_customer(email: str):
 
 async def get_claim(claim_number: str):
     """Retrieve specific claim details and status by claim number."""
+    claim_number = claim_number.strip().upper().replace("CL-", "").replace("CL ", "")
+    if not claim_number.startswith("CL"):
+        claim_number = f"CL{claim_number}"
     log_event(Colors.CYAN, "🔌", f"Direct API: get_claim({claim_number})")
     start = time.time()
     try:
@@ -65,6 +69,7 @@ async def get_claim(claim_number: str):
 
 async def get_full_details(email: str):
     """Get comprehensive insurance details including policies, all claims, and history for a customer."""
+    email = email.strip().lower()
     log_event(Colors.CYAN, "🔌", f"Direct API: get_full_details({email})")
     start = time.time()
     try:
@@ -174,8 +179,8 @@ def log_event(color, icon, message):
     print(f"[{timestamp}] {color}{icon} {message}{Colors.END}")
 
 # GCS & Credentials Configuration
-GCS_BUCKET_NAME = "conversational-recordings-ai"
-SERVICE_ACCOUNT_PATH = "/Users/goutham/Desktop/demo/swapna-conversational.json"
+GCS_BUCKET_NAME = "conversational-recordings-ai1"
+SERVICE_ACCOUNT_PATH = "/Users/goutham/Desktop/demo/conversational-ai-adk-efce16c1fa03.json"
 
 # Set environment variable for any libraries that use ADC
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = SERVICE_ACCOUNT_PATH
@@ -423,7 +428,7 @@ CONFIG = types.LiveConnectConfig(
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     - NEVER start a conversation with the exact same greeting twice. 
     - Vary your openers based on time of day, vibe, or context. Use phrases like:
-      "Good day! How can I assist you with your insurance today?"
+      "Good day! How can I assist you with your  today?"
       "Hi there! I'm here to help with any claim or policy questions you might have."
       "Hello! Thanks for calling in. What can I do for you today?"
     - NEVER use a robotic "Is there anything else?" loop. If the user is done, close the call warmly and uniquely.
@@ -628,7 +633,7 @@ async def generate_summary(session_id: str):
 
     # 2. Build transcript string
     transcript = "\n".join(f"{sender}: {text}" for sender, text in rows)
-    prompt = f"Please summarize the following insurance support call transcript:\n\n{transcript}"
+    prompt = f"Please summarize the following  support call transcript:\n\n{transcript}"
 
     try:
         # 3. Run through ADK summary_agent
@@ -785,13 +790,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
             
             if stored_summary:
                 initial_prompt = (
-                    f"You are a warm, professional insurance assistant. The current time is {current_time_str}. "
+                    f"You are a warm, professional  assistant. The current time is {current_time_str}. "
                     f"A customer is returning to follow up on '{stored_summary.get('title', 'their previous inquiry')}'. "
                     f"Choose a UNIQUE, time-appropriate greeting (e.g., Good Afternoon/Evening/etc) and invite them to continue."
                 )
             else:
                 initial_prompt = (
-                    f"You are a helpful insurance voice agent. The current time is {current_time_str}. "
+                    f"You are a helpful  voice agent. The current time is {current_time_str}. "
                     "The call has just connected. Start with a UNIQUE, warm, and time-appropriate greeting. "
                     "Introduce yourself and ask how you can help."
                 )
@@ -884,7 +889,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                         return (tool, val)
                     cleaned = val.strip().upper()
                     if tool == "get_claim":
-                        cleaned = cleaned.replace("CL-", "").replace("CL", "")
+                        cleaned = cleaned.replace("CL-", "").replace("CL ", "").replace("CL", "")
+                    elif tool in ("get_customer", "get_full_details"):
+                        cleaned = cleaned.lower()
                     return (tool, cleaned)
 
                 async def execute_one_tool(fc, tool_func):
@@ -994,11 +1001,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                                     user_transcript_buffer += chunk
                                     
                                     # --- Speculative Engine ---
-                                    # Look for Claim IDs: CL-105, CL105, or raw 4-digit numbers (like 7070)
-                                    claim_matches = re.findall(r"(?:CL-?\d+)|(?:\b\d{4}\b)", user_transcript_buffer, re.IGNORECASE)
+                                    # Look for Claim IDs: CL-105, CL 105, CL105, or raw 3-4 digit numbers (like 105 or 7070)
+                                    claim_matches = re.findall(r"(?:CL[- ]?\d+)|(?:\b\d{3,4}\b)", user_transcript_buffer, re.IGNORECASE)
                                     for mid in claim_matches:
-                                        # Use the digits only if it's a raw number, or the whole thing if it has CL-
-                                        clean_id = mid.upper().replace("CL-", "").replace("CL", "")
+                                        # Use the digits only if it's a raw number, or the whole thing if it has CL- or CL
+                                        clean_id = mid.upper().replace("CL-", "").replace("CL ", "").replace("CL", "")
                                         asyncio.create_task(speculative_fetch("get_claim", "claim_number", clean_id))
                                     
                                     # Look for Emails
