@@ -291,19 +291,13 @@ CONFIG = types.LiveConnectConfig(
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     CRITICAL BEHAVIORAL RULE: NO GENERIC QUESTIONS OR FOLLOW-UPS
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    - You are STRICTLY PROHIBITED from asking generic, open-ended questions.
-    - NEVER say any of the following phrases or any variations:
-      - "Is there anything else I can help you with today?"
-      - "Is there anything else I can assist you with?"
-      - "Is there anything else?"
-      - "How can I help you today?"
-      - "Is there anything else I can do for you?"
-    - Doing so is a major violation of your protocol.
-    - Instead, you MUST always ask highly specific, context-relevant questions based on what the user is currently speaking about.
-    - If a task is completed or details are provided:
-      - If they just retrieved a policy, ask if they want to review its coverage limit or premium payments.
-      - If they had missing documents (e.g., Hospital Invoice), ask if they want help uploading or tracking those.
-      - If they are completely satisfied and have no remaining specific items being discussed, do NOT ask any follow-up question; close the call warmly and uniquely (e.g., "I've noted that down. Have a wonderful rest of your day!").
+    - You are ABSOLUTELY PROHIBITED from asking generic, open-ended, or filler questions.
+    - NEVER ask questions containing "else", "other", "clarify", "additional", "further", "assist", or "help" (e.g., "Is there anything else?", "Is there anything else I can clarify?", "Is there a specific detail you needed?").
+    - Under NO circumstances should you use the word "else" or "other" in any question at the end of your turns.
+    - Instead, your response must end in one of two ways:
+      1. If a topic is currently active (e.g., waiting for workshop invoice on CL115): you may ask a highly specific, context-relevant question (e.g., "Would you like me to note down the garage's contact number for you?").
+      2. If you have fully answered the customer's specific request and they have not introduced a new topic: simply state the information clearly and STOP. Do NOT ask any follow-up question. For example: "That information hasn't been submitted yet by the garage." and stop talking there. Wait for the customer to speak next.
+    - If they are completely satisfied and have no remaining specific items being discussed, do NOT ask any follow-up question; close the call warmly and uniquely (e.g., "I've noted that down. Have a wonderful rest of your day!").
 
 
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -944,21 +938,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                     
                     function_responses = await asyncio.gather(*tool_tasks)
                     
-                    # 2. Wait for current turn (filler) to finish so it's heard before next response
-                    log_event(Colors.CYAN, "⏳", "Tools ready, waiting for filler turn to complete...")
-                    try:
-                        # Wait for the turn_complete signal from the main loop
-                        await asyncio.wait_for(turn_complete_event.wait(), timeout=5.0)
-                    except asyncio.TimeoutError:
-                        log_event(Colors.YELLOW, "⚠️", "Turn complete signal timed out — delivering tool results now.")
-                    
-                    # 3. Final Break: Break the bubble between Filler and Data Response
+                    # 2. Break the bubble between Filler and Data Response on the client
                     await websocket.send_text(json.dumps({"type": "new_bubble"}))
-                    log_event(Colors.CYAN, "🫧", "Sent new_bubble signal after filler completion")
+                    log_event(Colors.CYAN, "🫧", "Sent new_bubble signal to start a new chat bubble")
                     
-                    # 4. Return results to model
+                    # 3. Return results to model immediately
                     await session.send(input=types.LiveClientToolResponse(function_responses=function_responses))
-                    log_event(Colors.GREEN, "🚀", "Tool results delivered to Gemini.")
+                    log_event(Colors.GREEN, "🚀", "Tool results delivered to Gemini immediately.")
                     turn_complete_event.clear()
 
                 async def speculative_fetch(tool_name, arg_name, arg_val):
