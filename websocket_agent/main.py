@@ -140,7 +140,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS sessions
-                 (id TEXT PRIMARY KEY, title TEXT, created_at TIMESTAMP, summary TEXT)''')
+                 (id TEXT PRIMARY KEY, title TEXT, created_at TIMESTAMP, summary TEXT, rating INTEGER, email TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS messages
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, 
                   sender TEXT, text TEXT, created_at TIMESTAMP, audio_path TEXT, duration_ms INTEGER,
@@ -358,9 +358,10 @@ CONFIG = types.LiveConnectConfig(
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     - NEVER invent policy numbers, claim statuses, amounts, dates, coverage details, or deadlines.
     - ALWAYS use the available tools to verify real data before responding.
-    - Tools available: `get_claim(claim_number)`, `get_customer(email)`, `get_full_details(email)`.
+    - Tools available: `safe_get_claim(claim_number)`, `safe_get_customer()`, `safe_get_full_details()`.
+    - Note that you are already authenticated as the user, so you do not need their email to fetch customer or details.
     - If a tool returns no data or incomplete data:
-    → "I wasn't able to retrieve that information right now. Could you please verify your [policy number / email / mobile number]?"
+    → "I wasn't able to retrieve that information right now. Could you please verify your [policy number]?"
     - If data is still unavailable after retry:
     → "I'd recommend reaching out to our support team directly who can access your records in detail."
     - Never guess, estimate, or assume policy or claim information.
@@ -386,7 +387,7 @@ CONFIG = types.LiveConnectConfig(
     → "Hello! Thank you for calling us. I'm your Hartford Insurance assistant. Let's get started with your policy or claim query."
 
     2. IDENTIFICATION (when needed):
-    → "May I have your policy number or registered email / mobile number to pull up your details?"
+    → "May I have your policy number to pull up your details?"
 
     4. RESOLUTION:
     → Give clear, step-by-step guidance. Confirm understanding after each key point.
@@ -471,20 +472,35 @@ async def get():
     from fastapi import Response
     return Response(html, media_type="text/html")
 
+from fastapi import Body
+class LoginRequest(BaseModel):
+    email: str
+
+@app.post("/api/auth/login")
+async def auth_login(req: LoginRequest):
+    data = await get_customer(req.email)
+    if not data or "error" in data or data.get("customer") is None:
+        return {"status": "error", "message": "user is not present"}
+    return {"status": "success", "email": req.email}
+
 @app.get("/api/sessions", response_model=List[SessionInfo])
-async def get_sessions():
+async def get_sessions(email: str = Query(None)):
+    if not email:
+        return []
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT id, title, created_at, rating FROM sessions ORDER BY created_at DESC")
+    c.execute("SELECT id, title, created_at, rating FROM sessions WHERE email = ? ORDER BY created_at DESC", (email,))
     rows = c.fetchall()
     conn.close()
     return [{"id": r[0], "title": r[1], "created_at": r[2], "rating": r[3]} for r in rows]
 
 @app.get("/api/sessions/{session_id}")
-async def get_session(session_id: str):
+async def get_session(session_id: str, email: str = Query(None)):
+    if not email:
+        return {"error": "Email is required"}
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT id, title, created_at, rating, summary FROM sessions WHERE id = ?", (session_id,))
+    c.execute("SELECT id, title, created_at, rating, summary FROM sessions WHERE id = ? AND email = ?", (session_id, email))
     r = c.fetchone()
     conn.close()
     if not r: return {"error": "Session not found"}
@@ -699,19 +715,20 @@ async def generate_summary(session_id: str):
 
 @app.websocket("/ws")
 @app.websocket("/ws/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = None, voice: str = Query("Zephyr")):
+async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = None, voice: str = Query("Zephyr"), email: str = Query(None)):
     await websocket.accept()
     
     # Explicitly get voice from query params to ensure it's captured
     voice = websocket.query_params.get("voice", voice)
-    log_event(Colors.BOLD + Colors.CYAN, "🎙️", f"NEW SESSION: Voice chosen = {voice}")
+    user_email = websocket.query_params.get("email", email)
+    log_event(Colors.BOLD + Colors.CYAN, "🎙️", f"NEW SESSION: Voice chosen = {voice}, User = {user_email}")
     
     if not session_id:
         session_id = f"sess_{int(time.time())}"
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("INSERT INTO sessions (id, title, created_at) VALUES (?, ?, ?)", 
-                  (session_id, f"Session {datetime.now().strftime('%Y-%m-%d %H:%M')}", datetime.now().isoformat()))
+        c.execute("INSERT INTO sessions (id, title, created_at, email) VALUES (?, ?, ?, ?)", 
+                  (session_id, f"Session {datetime.now().strftime('%Y-%m-%d %H:%M')}", datetime.now().isoformat(), user_email))
         conn.commit()
         conn.close()
 
@@ -721,7 +738,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     # Prefer the stored post-call summary for context (compact & clean)
-    c.execute("SELECT summary FROM sessions WHERE id = ?", (session_id,))
+    c.execute("SELECT summary FROM sessions WHERE id = ? AND email = ?", (session_id, user_email))
     summary_row = c.fetchone()
     stored_summary = None
     if summary_row and summary_row[0]:
@@ -754,6 +771,30 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
     already know what was discussed. Do not repeat resolved matters; build forward.
     """
 
+    # ── Define Secure Tool Wrappers for this Session ────────────────────────
+    async def safe_get_customer():
+        """Get basic customer details for the currently authenticated user."""
+        return await get_customer(user_email)
+
+    async def safe_get_full_details():
+        """Get comprehensive insurance details including policies, all claims, and history for the currently authenticated user."""
+        return await get_full_details(user_email)
+
+    async def safe_get_claim(claim_number: str):
+        """Retrieve specific claim details and status by claim number. Ensure it belongs to the authenticated user."""
+        full_details = await get_full_details(user_email)
+        if "error" in full_details:
+            return full_details
+        
+        # Verify if claim_number exists in the user's claims
+        claims = full_details.get("claims_full", [])
+        for claim in claims:
+            if claim.get("claim_number") == claim_number:
+                return await get_claim(claim_number)
+                
+        return {"error": "Access Denied: This claim does not belong to you or does not exist."}
+    # ──────────────────────────────────────────────────────────────────────
+
     # ── Build a session-specific CONFIG with history and chosen voice injected ─────────────
     base_instruction = CONFIG.system_instruction.parts[0].text
     session_config = types.LiveConnectConfig(
@@ -770,7 +811,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
         system_instruction=types.Content(parts=[
             types.Part.from_text(text=base_instruction + history_block)
         ]),
-        tools=[get_customer, get_claim, get_full_details]
+        tools=[safe_get_customer, safe_get_claim, safe_get_full_details]
     )
     # ──────────────────────────────────────────────────────────────────────
 
@@ -892,18 +933,18 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                 turn_complete_event = asyncio.Event()
 
                 tool_map = {
-                    "get_customer": get_customer,
-                    "get_claim": get_claim,
-                    "get_full_details": get_full_details
+                    "safe_get_customer": safe_get_customer,
+                    "safe_get_claim": safe_get_claim,
+                    "safe_get_full_details": safe_get_full_details
                 }
 
                 def normalize_key(tool, val):
                     if not isinstance(val, str):
                         return (tool, val)
                     cleaned = val.strip().upper()
-                    if tool == "get_claim":
+                    if tool == "safe_get_claim":
                         cleaned = cleaned.replace("CL-", "").replace("CL ", "").replace("CL", "")
-                    elif tool in ("get_customer", "get_full_details"):
+                    elif tool in ("safe_get_customer", "safe_get_full_details"):
                         cleaned = cleaned.lower()
                     return (tool, cleaned)
 

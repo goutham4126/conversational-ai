@@ -476,7 +476,8 @@ function appendMessage(sender, text, isHistory = false, audioPath = null, msg = 
 // Session Management Logic
 async function fetchSessions() {
     try {
-        const response = await fetch('/api/sessions');
+        const email = localStorage.getItem('auth_email') || '';
+        const response = await fetch(`/api/sessions?email=${encodeURIComponent(email)}`);
         const sessions = await response.json();
         renderSessions(sessions);
     } catch (err) {
@@ -548,7 +549,8 @@ async function selectSession(id, rating = null) {
 
     try {
         // Fetch absolute latest session info (including rating & summary)
-        const sessRes = await fetch(`/api/sessions/${id}`);
+        const email = localStorage.getItem('auth_email') || '';
+        const sessRes = await fetch(`/api/sessions/${id}?email=${encodeURIComponent(email)}`);
         const session = await sessRes.json();
         const latestRating = session.rating;
 
@@ -682,8 +684,9 @@ function flushPlayback() {
 function connectWebSocket() {
     console.log("Connecting to WebSocket...");
     const selectedVoice = currentVoice;
+    const authEmail = localStorage.getItem('auth_email') || '';
     const baseUrl = currentSessionId ? `ws://${location.host}/ws/${currentSessionId}` : `ws://${location.host}/ws`;
-    const url = `${baseUrl}?voice=${selectedVoice}`;
+    const url = `${baseUrl}?voice=${selectedVoice}&email=${encodeURIComponent(authEmail)}`;
     console.log("[WS] Connecting to:", url);
 
     // UI feedback: Show the selected voice in the status badge while connecting
@@ -1003,4 +1006,132 @@ function hideSummaryCard() {
 
 // Initial load
 fetchSessions();
+
+// ── Auth Logic ─────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+    const authOverlay = document.getElementById('authOverlay');
+    const authEmail = document.getElementById('authEmail');
+    const authOtp = document.getElementById('authOtp');
+    const sendOtpBtn = document.getElementById('sendOtpBtn');
+    const verifyOtpBtn = document.getElementById('verifyOtpBtn');
+    const emailGroup = document.getElementById('emailGroup');
+    const otpGroup = document.getElementById('otpGroup');
+    const authError = document.getElementById('authError');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const userNameDisplay = document.getElementById('userName');
+    
+    let generatedOtp = null;
+
+    function checkAuth() {
+        const email = localStorage.getItem('auth_email');
+        const expires = localStorage.getItem('auth_expires');
+        
+        if (email && expires && Date.now() < parseInt(expires)) {
+            authOverlay.style.display = 'none';
+            if (userNameDisplay) userNameDisplay.innerText = email.split('@')[0];
+            return true;
+        }
+        
+        // Clear invalid session
+        localStorage.removeItem('auth_email');
+        localStorage.removeItem('auth_expires');
+        authOverlay.style.display = 'flex';
+        resetAuthForm();
+        return false;
+    }
+
+    function resetAuthForm() {
+        authEmail.value = '';
+        authOtp.value = '';
+        emailGroup.style.display = 'flex';
+        otpGroup.style.display = 'none';
+        sendOtpBtn.style.display = 'block';
+        verifyOtpBtn.style.display = 'none';
+        authError.style.display = 'none';
+        generatedOtp = null;
+    }
+
+    sendOtpBtn.addEventListener('click', async () => {
+        const email = authEmail.value.trim();
+        if (!email || !email.includes('@')) {
+            showAuthError('Please enter a valid email address');
+            return;
+        }
+        
+        sendOtpBtn.innerText = 'Checking...';
+        sendOtpBtn.disabled = true;
+
+        try {
+            const res = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email })
+            });
+            const data = await res.json();
+
+            if (data.status === 'success') {
+                // User exists, now generate mock OTP
+                generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
+                console.log(`%cMock OTP for ${email}: ${generatedOtp}`, 'background: #222; color: #00ff00; font-size: 16px; padding: 4px;');
+                alert(`MOCK OTP (For Testing): ${generatedOtp}`);
+                
+                authError.style.display = 'none';
+                emailGroup.style.display = 'none';
+                otpGroup.style.display = 'flex';
+                sendOtpBtn.style.display = 'none';
+                verifyOtpBtn.style.display = 'block';
+                authOtp.focus();
+            } else {
+                showAuthError(data.message || 'User is not present');
+            }
+        } catch (err) {
+            showAuthError('Network error, please try again.');
+        } finally {
+            sendOtpBtn.innerText = 'Send OTP';
+            sendOtpBtn.disabled = false;
+        }
+    });
+
+    verifyOtpBtn.addEventListener('click', () => {
+        const otp = authOtp.value.trim();
+        if (otp !== generatedOtp) {
+            showAuthError('Invalid OTP');
+            return;
+        }
+
+        const email = authEmail.value.trim();
+        verifyOtpBtn.innerText = 'Verifying...';
+        verifyOtpBtn.disabled = true;
+
+        // Set expiry to 24 hours
+        localStorage.setItem('auth_email', email);
+        localStorage.setItem('auth_expires', Date.now() + 24 * 60 * 60 * 1000);
+        checkAuth();
+        
+        // Reconnect websocket with email
+        if (ws) ws.close();
+        newChatBtn.click();
+        
+        verifyOtpBtn.innerText = 'Verify & Login';
+        verifyOtpBtn.disabled = false;
+    });
+
+    function showAuthError(msg) {
+        authError.innerText = msg;
+        authError.style.display = 'block';
+    }
+
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', () => {
+            localStorage.removeItem('auth_email');
+            localStorage.removeItem('auth_expires');
+            checkAuth();
+            if (ws) ws.close(); // Close active websocket on logout
+            newChatBtn.click(); // Reset UI
+        });
+    }
+
+    // Initial check
+    checkAuth();
+});
 initRatingListeners();
